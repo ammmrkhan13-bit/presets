@@ -6,6 +6,8 @@
   <title>PRESETS — 1-of-1 Authentic Kicks | Pakistan</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Supabase JS SDK for Real-Time Instant Deletions & Updates -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- EmailJS Browser SDK for 2FA Security -->
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js" async></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -892,6 +894,13 @@
         if (!res.ok) throw new Error(`Supabase upsert order HTTP ${res.status}`);
         return res.json();
       },
+      async deleteOrder(orderId) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?order_id=eq.${encodeURIComponent(orderId)}`, {
+          method: 'DELETE',
+          headers: supabaseHeaders
+        });
+        if (!res.ok) throw new Error(`Supabase delete order HTTP ${res.status}`);
+      },
       async fetchDeliverySlips() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?select=*&order=created_at.desc`, {
           method: 'GET',
@@ -912,6 +921,13 @@
         const data = await res.json();
         return Array.isArray(data) && data[0] ? mapSlipFromDB(data[0]) : slip;
       },
+      async deleteDeliverySlip(slipId) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?slip_id=eq.${encodeURIComponent(slipId)}`, {
+          method: 'DELETE',
+          headers: supabaseHeaders
+        });
+        if (!res.ok) throw new Error(`Supabase delete slip HTTP ${res.status}`);
+      },
       async fetchReviews() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?select=*&order=created_at.desc`, {
           method: 'GET',
@@ -931,8 +947,23 @@
         if (!res.ok) throw new Error(`Supabase insert review HTTP ${res.status}`);
         const data = await res.json();
         return Array.isArray(data) && data[0] ? mapReviewFromDB(data[0]) : null;
+      },
+      async deleteReview(reviewId) {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?id=eq.${encodeURIComponent(reviewId)}`, {
+          method: 'DELETE',
+          headers: supabaseHeaders
+        });
+        if (!res.ok) throw new Error(`Supabase delete review HTTP ${res.status}`);
       }
     };
+
+    // Initialize Official Supabase Realtime Client
+    let supabaseRealtimeClient = null;
+    try {
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        supabaseRealtimeClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      }
+    } catch (e) {}
 
     // ==========================================
     // 4. APPLICATION STATE (PLAIN JS)
@@ -1015,6 +1046,8 @@
       cancelForm: { name: '', phone: '', orderId: '', reason: '' },
       returnModalOpen: false,
       returnForm: { name: '', phone: '', pairId: '', damageDetails: '' },
+      reviewLightboxModal: null,
+      deleteReviewConfirmId: null,
       codSuccessModal: null,
       prepaidConfirmScreen: null,
       simplePrepaidSuccessOrder: null,
@@ -1097,14 +1130,18 @@
     }
 
     // ==========================================
-    // 5. COMPUTED HELPERS
+    // 5. CORE STORE & ORDER HELPER FUNCTIONS
     // ==========================================
     function getPairCodeMap() {
       const map = {};
-      const chronological = [...state.sneakers].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      const chronological = [...state.sneakers].sort(
+        (a, b) => (a.createdAt || 0) - (b.createdAt || 0)
+      );
       chronological.forEach((s, idx) => {
         const rawCustom = String(s.customPairId || '').trim();
-        const normalizedCustom = /^\d+$/.test(rawCustom) ? String(parseInt(rawCustom, 10)) : rawCustom;
+        const normalizedCustom = /^\d+$/.test(rawCustom)
+          ? String(parseInt(rawCustom, 10))
+          : rawCustom;
         map[s.id] = normalizedCustom || String(idx + 1);
       });
       return map;
@@ -1129,7 +1166,8 @@
 
     function getOrderDisplayNumber(order, fallbackIdx = 0) {
       if (!order) return '1';
-      const fromItem = order.items?.[0]?.pairCode || order.items?.[0]?.orderNumber;
+      const fromItem =
+        order.items?.[0]?.pairCode || order.items?.[0]?.orderNumber;
       if (fromItem) {
         const raw = String(fromItem).trim();
         return /^\d+$/.test(raw) ? String(parseInt(raw, 10)) : raw;
@@ -1146,38 +1184,77 @@
       return String(fallbackIdx + 1);
     }
 
-    function getCartItems() {
-      return state.cart
-        .map((id) => state.sneakers.find((s) => s.id === id))
-        .filter((s) => Boolean(s) && s.status === 'available');
+    function getEffectiveCodPolicyDescription() {
+      const isCodAdvancePolicyActive = Boolean(state.storeConfig.codPolicyEnabled);
+      const activeCodDepositAmount = isCodAdvancePolicyActive
+        ? Number(state.storeConfig.codAdvanceAmount) || 500
+        : 0;
+      return isCodAdvancePolicyActive
+        ? state.storeConfig.codPolicyText ||
+            `For Cash on Delivery (COD) orders, a Rs. ${activeCodDepositAmount} advance booking deposit is required in our official JS Bank account (Ali Ammar - 03328559003 | IBAN: ${BANK_IBAN}) to lock your 1-of-1 sneaker. The Rs. ${activeCodDepositAmount} deposit is deducted from your total bill, and you pay the remaining balance upon delivery.`
+        : 'Cash on Delivery (COD) is active with Rs. 0 Advance Required! You will pay 100% of your total bill in cash upon doorstep delivery. No returns or exchanges except for serious undisclosed damage or receiving the wrong pair.';
     }
 
     function getOrderTotals() {
-      const cartItems = getCartItems();
-      const cartRequiresPrepaidOnly = cartItems.some((item) => Boolean(item.prepaidOnly || item.is_prepaid_only));
+      const cartItems = state.cart
+        .map((id) => state.sneakers.find((s) => s.id === id))
+        .filter((s) => Boolean(s) && s.status === 'available');
+
+      const cartRequiresPrepaidOnly = cartItems.some((item) =>
+        Boolean(item.prepaidOnly || item.is_prepaid_only)
+      );
       if (cartRequiresPrepaidOnly && state.paymentMethod === 'COD') {
         state.paymentMethod = 'PREPAID';
       }
 
-      const isCodAdvancePolicyActive = Boolean(state.storeConfig.codPolicyEnabled);
-      const activeCodDepositAmount = isCodAdvancePolicyActive ? Number(state.storeConfig.codAdvanceAmount) || 500 : 0;
-
-      const rawOriginalSubtotal = cartItems.reduce((acc, item) => acc + (Number(item.price ?? item.price_pkr) || 0), 0);
-      const discountedProductSubtotal = cartItems.reduce((acc, item) => acc + getEffectivePairPrice(item), 0);
+      const rawOriginalSubtotal = cartItems.reduce(
+        (acc, item) => acc + (Number(item.price ?? item.price_pkr) || 0),
+        0
+      );
+      const discountedProductSubtotal = cartItems.reduce(
+        (acc, item) => acc + getEffectivePairPrice(item),
+        0
+      );
       const pairLevelSavings = rawOriginalSubtotal - discountedProductSubtotal;
 
-      const hasFreeDeliveryPair = cartItems.some((item) => Boolean(item.freeDelivery));
-      const qualifiesForFreeDelivery = discountedProductSubtotal >= FREE_DELIVERY_THRESHOLD || hasFreeDeliveryPair;
-      const shipping = cartItems.length > 0 ? (qualifiesForFreeDelivery ? 0 : SHIPPING_FEE) : 0;
-      const isPrepaid = state.paymentMethod === 'PREPAID';
-      const prepaidFivePercentDiscount = isPrepaid ? Math.round(discountedProductSubtotal * 0.05) : 0;
+      const hasFreeDeliveryPair = cartItems.some((item) =>
+        Boolean(item.freeDelivery)
+      );
+      const qualifiesForFreeDelivery =
+        discountedProductSubtotal >= FREE_DELIVERY_THRESHOLD ||
+        hasFreeDeliveryPair;
+      const shipping =
+        cartItems.length > 0
+          ? qualifiesForFreeDelivery
+            ? 0
+            : SHIPPING_FEE
+          : 0;
 
-      const netSneakerTotal = discountedProductSubtotal - prepaidFivePercentDiscount;
+      const isPrepaid = state.paymentMethod === 'PREPAID';
+      const prepaidFivePercentDiscount = isPrepaid
+        ? Math.round(discountedProductSubtotal * 0.05)
+        : 0;
+
+      const netSneakerTotal =
+        discountedProductSubtotal - prepaidFivePercentDiscount;
       const finalTotalWithShipping = netSneakerTotal + shipping;
 
-      const codAdvanceRequired = cartItems.length > 0 && isCodAdvancePolicyActive ? activeCodDepositAmount : 0;
+      const isCodAdvancePolicyActive = Boolean(
+        state.storeConfig.codPolicyEnabled
+      );
+      const activeCodDepositAmount = isCodAdvancePolicyActive
+        ? Number(state.storeConfig.codAdvanceAmount) || 500
+        : 0;
+
+      const codAdvanceRequired =
+        cartItems.length > 0 && isCodAdvancePolicyActive
+          ? activeCodDepositAmount
+          : 0;
+
       const payableNow = isPrepaid ? finalTotalWithShipping : codAdvanceRequired;
-      const payableOnDelivery = isPrepaid ? 0 : Math.max(0, finalTotalWithShipping - codAdvanceRequired);
+      const payableOnDelivery = isPrepaid
+        ? 0
+        : Math.max(0, finalTotalWithShipping - codAdvanceRequired);
 
       return {
         cartItems,
@@ -1197,15 +1274,6 @@
       };
     }
 
-    function getEffectiveCodPolicyDescription() {
-      const isCodAdvancePolicyActive = Boolean(state.storeConfig.codPolicyEnabled);
-      const activeCodDepositAmount = isCodAdvancePolicyActive ? Number(state.storeConfig.codAdvanceAmount) || 500 : 0;
-      return isCodAdvancePolicyActive
-        ? state.storeConfig.codPolicyText ||
-          `For Cash on Delivery (COD) orders, a Rs. ${activeCodDepositAmount} advance booking deposit is required in our official JS Bank account (Ali Ammar - 03328559003 | IBAN: ${BANK_IBAN}) to lock your 1-of-1 sneaker. The Rs. ${activeCodDepositAmount} deposit is deducted from your total bill, and you pay the remaining balance upon delivery.`
-        : 'Cash on Delivery (COD) is active with Rs. 0 Advance Required! You will pay 100% of your total bill in cash upon doorstep delivery. No returns or exchanges except for serious undisclosed damage or receiving the wrong pair.';
-    }
-
     function launchWhatsApp(phone, plainTextMessage) {
       const cleanPhone = String(phone || WHATSAPP_NUMBER).replace(/[^0-9]/g, '');
       const encoded = encodeURIComponent(plainTextMessage);
@@ -1214,7 +1282,7 @@
     }
 
     // ==========================================
-    // 6. SUPABASE TWO-WAY SYNC ACTIONS
+    // 6. SUPABASE TWO-WAY SYNC & INSTANT REAL-TIME DELETION ENGINE
     // ==========================================
     async function syncSettingsToSupabase(nextConfig, toastMessage = '') {
       state.storeConfig = nextConfig;
@@ -1231,45 +1299,185 @@
       renderApp();
     }
 
+    function isUserTypingInInput() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = (el.tagName || '').toUpperCase();
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+
     async function syncFromSupabase(silent = false) {
       try {
-        const [remoteSettings, remoteProducts, remoteOrders, remoteSlips, remoteReviews] = await Promise.all([
-          supabaseRest.fetchSettings().catch(() => null),
+        const [settingsRes, productsRes, ordersRes, slipsRes, reviewsRes] = await Promise.allSettled([
+          supabaseRest.fetchSettings(),
           supabaseRest.fetchProducts(),
           supabaseRest.fetchOrders(),
-          supabaseRest.fetchDeliverySlips().catch(() => []),
-          supabaseRest.fetchReviews().catch(() => [])
+          supabaseRest.fetchDeliverySlips(),
+          supabaseRest.fetchReviews()
         ]);
 
-        if (remoteSettings) {
-          state.storeConfig = mapSettingsFromDB(remoteSettings, state.storeConfig);
-        } else {
-          supabaseRest.upsertSettings(state.storeConfig).catch(() => {});
+        let anyConnected = false;
+
+        if (settingsRes.status === 'fulfilled') {
+          anyConnected = true;
+          if (settingsRes.value) {
+            state.storeConfig = mapSettingsFromDB(settingsRes.value, state.storeConfig);
+          } else {
+            supabaseRest.upsertSettings(state.storeConfig).catch(() => {});
+          }
         }
 
-        if (remoteProducts.length > 0) {
-          state.sneakers = remoteProducts;
-        } else {
-          await Promise.all(INITIAL_SNEAKERS.map((p) => supabaseRest.upsertProduct(p).catch(() => {})));
+        // Authoritative overwrite: if an item is deleted in Supabase, it is immediately removed locally
+        if (productsRes.status === 'fulfilled') {
+          anyConnected = true;
+          state.sneakers = productsRes.value;
+          const validIds = new Set(state.sneakers.map((s) => String(s.id)));
+          state.cart = state.cart.filter((id) => validIds.has(String(id)));
+          if (state.activeView === 'product' && state.selectedPairId && !validIds.has(String(state.selectedPairId))) {
+            state.selectedPairId = null;
+            state.activeView = 'home';
+          }
         }
 
-        if (remoteOrders.length > 0) state.orders = remoteOrders;
-        if (remoteSlips.length > 0) state.deliverySlips = remoteSlips;
-        if (remoteReviews.length > 0) state.reviews = remoteReviews;
+        if (ordersRes.status === 'fulfilled') {
+          anyConnected = true;
+          state.orders = ordersRes.value;
+        }
+
+        if (slipsRes.status === 'fulfilled') {
+          anyConnected = true;
+          state.deliverySlips = slipsRes.value;
+        }
+
+        if (reviewsRes.status === 'fulfilled') {
+          anyConnected = true;
+          state.reviews = reviewsRes.value;
+          if (
+            state.reviewLightboxModal &&
+            !state.reviews.some((r) => String(r.id) === String(state.reviewLightboxModal.id))
+          ) {
+            state.reviewLightboxModal = null;
+          }
+        }
+
+        if (!anyConnected) {
+          throw new Error('Could not reach Supabase tables');
+        }
 
         state.supabaseSyncStatus = 'Cloud Database Connected';
         persistAllLocal();
-        renderApp();
+        if (!silent || !isUserTypingInInput()) {
+          renderApp();
+        }
         if (!silent) {
-          showToast('Synced all 4 Supabase tables (Settings, Inventory, Orders & Slips)!');
+          showToast('Synced all Supabase tables (Settings, Inventory, Orders, Slips & Reviews)!');
         }
       } catch (err) {
         state.supabaseSyncStatus = 'Local Fallback Mode';
-        renderApp();
         if (!silent) {
+          renderApp();
           showToast('Using local data fallback (Run SQL schema in Supabase).');
         }
       }
+    }
+
+    function initSupabaseRealtimeSubscription() {
+      if (!supabaseRealtimeClient) return;
+      try {
+        const channel = supabaseRealtimeClient
+          .channel('presets-realtime-sync')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'presets_inventory' },
+            (payload) => {
+              if (payload.eventType === 'DELETE' && payload.old && payload.old.id !== undefined) {
+                const deletedId = String(payload.old.id);
+                state.sneakers = state.sneakers.filter((s) => String(s.id) !== deletedId);
+                state.cart = state.cart.filter((id) => String(id) !== deletedId);
+                if (String(state.selectedPairId) === deletedId) {
+                  state.selectedPairId = null;
+                  if (state.activeView === 'product') state.activeView = 'home';
+                }
+                persistAllLocal();
+                renderApp();
+                showToast('Pair deleted from database in real-time.');
+              } else {
+                syncFromSupabase(true);
+              }
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'reviews' },
+            (payload) => {
+              if (payload.eventType === 'DELETE' && payload.old && payload.old.id !== undefined) {
+                const deletedId = String(payload.old.id);
+                state.reviews = state.reviews.filter((r) => String(r.id) !== deletedId);
+                if (state.reviewLightboxModal && String(state.reviewLightboxModal.id) === deletedId) {
+                  state.reviewLightboxModal = null;
+                }
+                persistAllLocal();
+                renderApp();
+                showToast('Review deleted from database in real-time.');
+              } else {
+                syncFromSupabase(true);
+              }
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'presets_orders' },
+            (payload) => {
+              if (payload.eventType === 'DELETE' && payload.old && payload.old.order_id !== undefined) {
+                const deletedOrderId = String(payload.old.order_id);
+                state.orders = state.orders.filter(
+                  (o) => String(o.orderNumber) !== deletedOrderId && String(o.id) !== deletedOrderId
+                );
+                persistAllLocal();
+                renderApp();
+              } else {
+                syncFromSupabase(true);
+              }
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'presets_delivery_slips' },
+            (payload) => {
+              if (payload.eventType === 'DELETE' && payload.old && payload.old.slip_id !== undefined) {
+                const deletedSlipId = String(payload.old.slip_id);
+                state.deliverySlips = state.deliverySlips.filter((s) => String(s.slipId) !== deletedSlipId);
+                persistAllLocal();
+                renderApp();
+              } else {
+                syncFromSupabase(true);
+              }
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'presets_settings' },
+            () => {
+              syncFromSupabase(true);
+            }
+          )
+          .subscribe();
+      } catch (e) {}
+
+      // Instant background sync when user switches back to tab or focuses window
+      window.addEventListener('focus', () => syncFromSupabase(true));
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          syncFromSupabase(true);
+        }
+      });
+
+      // Lightweight periodic background sync every 8 seconds so deletions never lag
+      setInterval(() => {
+        if (document.visibilityState === 'visible' && !isUserTypingInInput()) {
+          syncFromSupabase(true);
+        }
+      }, 8000);
     }
 
     async function pushAllLocalToSupabase() {
@@ -1415,11 +1623,7 @@
       try {
         await supabaseRest.insertReview(newRevPayload);
         const freshReviews = await supabaseRest.fetchReviews();
-        if (freshReviews.length > 0) {
-          state.reviews = freshReviews;
-        } else {
-          state.reviews = [newRevPayload, ...state.reviews];
-        }
+        state.reviews = freshReviews;
         showToast('Thank you! Your review is live on screen.');
       } catch (err) {
         state.reviews = [newRevPayload, ...state.reviews];
@@ -1429,6 +1633,35 @@
         state.isSubmittingReview = false;
         persistAllLocal();
         renderApp();
+      }
+    }
+
+    function openReviewPhotoLightbox(reviewId) {
+      const rev = state.reviews.find((r) => String(r.id) === String(reviewId));
+      if (!rev || !rev.imageUrl) return;
+      state.reviewLightboxModal = rev;
+      renderApp();
+    }
+
+    function closeReviewPhotoLightbox() {
+      state.reviewLightboxModal = null;
+      renderApp();
+    }
+
+    async function deleteReviewPermanently(reviewId) {
+      const targetId = String(reviewId);
+      state.reviews = state.reviews.filter((r) => String(r.id) !== targetId);
+      if (state.reviewLightboxModal && String(state.reviewLightboxModal.id) === targetId) {
+        state.reviewLightboxModal = null;
+      }
+      state.deleteReviewConfirmId = null;
+      persistAllLocal();
+      renderApp();
+      try {
+        await supabaseRest.deleteReview(targetId);
+        showToast('Review permanently deleted from Supabase & Storefront!');
+      } catch (err) {
+        showToast('Review removed from Storefront.');
       }
     }
 
@@ -2715,24 +2948,43 @@
 
       const reviewsHtml = state.reviews
         .map(
-          (rev) => `
+          (rev) => {
+            const safeRevId = escapeHtml(rev.id);
+            const stars = '★'.repeat(Math.min(5, Math.max(1, Number(rev.rating) || 5)));
+            return `
             <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-2xl p-5 flex flex-col justify-between space-y-3">
               <div class="space-y-2.5">
                 <div class="flex items-center justify-between">
                   <span class="bg-[#FF5500]/15 border border-[#FF5500]/40 text-[#FF5500] text-[10px] font-black px-2.5 py-0.5 rounded-full">
                     Verified Buyer • ${escapeHtml(rev.city || 'Pakistan')}
                   </span>
-                  <span class="text-[11px] text-orange-200/50">${escapeHtml(rev.date || '')}</span>
+                  <div class="flex items-center gap-2">
+                    <span class="text-amber-400 text-xs tracking-widest">${stars}</span>
+                    <span class="text-[11px] text-orange-200/50">${escapeHtml(rev.date || '')}</span>
+                  </div>
                 </div>
                 <p class="text-xs sm:text-sm text-orange-50/90 leading-relaxed">"${escapeHtml(rev.comment || '')}"</p>
-                ${rev.imageUrl ? `<img src="${escapeHtml(rev.imageUrl)}" alt="Customer review" class="w-full h-32 object-cover rounded-xl border border-[#FF5500]/25 mt-2" />` : ''}
+                ${
+                  rev.imageUrl
+                    ? `<div onclick="openReviewPhotoLightbox('${safeRevId}')" class="relative group cursor-zoom-in overflow-hidden rounded-xl border border-[#FF5500]/35 mt-2 bg-black">
+                        <img src="${escapeHtml(rev.imageUrl)}" alt="Customer review photo" class="w-full h-40 object-cover transition duration-500 group-hover:scale-105" />
+                        <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                          <span class="bg-[#FF5500] text-black text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-full shadow-[0_0_15px_rgba(255,85,0,0.8)] flex items-center gap-1.5">
+                            ${iconSvg('zoom', 'w-3.5 h-3.5')}
+                            <span>Click to View Full Frame</span>
+                          </span>
+                        </div>
+                      </div>`
+                    : ''
+                }
               </div>
               <div class="pt-2 border-t border-[#FF5500]/15 flex items-center justify-between text-xs">
                 <span class="font-bold text-white">${escapeHtml(rev.name || '')}</span>
                 <span class="text-[#FF5500] font-semibold truncate max-w-[150px]">${escapeHtml(rev.pairName || '')}</span>
               </div>
             </div>
-          `
+          `;
+          }
         )
         .join('');
 
@@ -2839,7 +3091,7 @@
               </div>
               <button
                 type="button"
-                onclick="supabaseRest.fetchReviews().then(r => { if(r.length){ state.reviews = r; persistAllLocal(); renderApp(); } showToast('Refreshed latest customer reviews!'); }).catch(() => showToast('Reviews are up to date.'));"
+                onclick="supabaseRest.fetchReviews().then(r => { state.reviews = r; persistAllLocal(); renderApp(); showToast('Refreshed latest customer reviews!'); }).catch(() => showToast('Reviews are up to date.'));"
                 class="text-xs bg-[#160B04] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 px-3.5 py-1.5 rounded-xl font-bold transition w-fit"
               >
                 ↻ Refresh Reviews
@@ -4185,6 +4437,85 @@
             </div>
           </div>
         `;
+      } else if (state.bossTab === 'reviews_manager') {
+        tabContentHtml = `
+          <div class="bg-[#160B04] border border-[#FF5500]/40 rounded-2xl p-5 sm:p-6 space-y-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-4">
+              <div>
+                <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">BOSS MODE COMMUNITY MODERATION (SYNCED TO SUPABASE REVIEWS)</span>
+                <h2 class="text-lg font-black text-white">Customer Reviews Manager (${state.reviews.length})</h2>
+              </div>
+              <button
+                type="button"
+                onclick="supabaseRest.fetchReviews().then(r => { state.reviews = r; persistAllLocal(); renderApp(); showToast('Synced latest reviews from Supabase!'); }).catch(() => showToast('Could not fetch remote reviews.'));"
+                class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 text-xs font-bold px-4 py-2 rounded-xl transition"
+              >
+                ↻ Sync Reviews from Cloud
+              </button>
+            </div>
+
+            ${
+              state.reviews.length === 0
+                ? `<p class="text-xs text-orange-200/50 py-8 text-center">No customer reviews in the database.</p>`
+                : `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    ${state.reviews
+                      .map((rev) => {
+                        const safeRevId = escapeHtml(rev.id);
+                        const stars = '★'.repeat(Math.min(5, Math.max(1, Number(rev.rating) || 5)));
+                        return `
+                          <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-2xl p-4 flex flex-col justify-between space-y-3">
+                            <div class="space-y-2.5">
+                              <div class="flex items-center justify-between gap-2">
+                                <span class="bg-[#FF5500]/15 border border-[#FF5500]/40 text-[#FF5500] text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                                  ${escapeHtml(rev.city || 'Pakistan')}
+                                </span>
+                                <span class="text-amber-400 text-xs tracking-widest">${stars}</span>
+                              </div>
+                              <div>
+                                <div class="text-xs font-black text-white">${escapeHtml(rev.name || 'Customer')}</div>
+                                <div class="text-[11px] text-[#FF5500] font-semibold">${escapeHtml(rev.pairName || '1-of-1 Authentic Pair')} • <span class="text-orange-200/50">${escapeHtml(rev.date || '')}</span></div>
+                              </div>
+                              <p class="text-xs text-orange-100/90 leading-relaxed bg-[#160B04] border border-[#FF5500]/20 rounded-xl p-3">
+                                "${escapeHtml(rev.comment || '')}"
+                              </p>
+                              ${
+                                rev.imageUrl
+                                  ? `<div onclick="openReviewPhotoLightbox('${safeRevId}')" class="relative group cursor-zoom-in rounded-xl overflow-hidden border border-[#FF5500]/35 bg-black">
+                                      <img src="${escapeHtml(rev.imageUrl)}" alt="Review photo" class="w-full h-36 object-cover transition duration-300 group-hover:scale-105" />
+                                      <div class="absolute bottom-2 right-2 bg-black/80 text-[#FF5500] text-[10px] font-black px-2.5 py-1 rounded-lg border border-[#FF5500]/40">
+                                        🔍 View Full Frame
+                                      </div>
+                                    </div>`
+                                  : ''
+                              }
+                            </div>
+
+                            <div class="pt-2 border-t border-[#FF5500]/20 flex items-center justify-between gap-2">
+                              <span class="text-[10px] text-orange-200/40 font-mono truncate">ID: ${safeRevId}</span>
+                              ${
+                                state.deleteReviewConfirmId === rev.id
+                                  ? `<div class="flex items-center gap-1.5">
+                                      <button type="button" onclick="deleteReviewPermanently('${safeRevId}')" class="bg-rose-600 hover:bg-rose-500 text-white font-black text-xs px-3 py-1.5 rounded-lg shadow-[0_0_15px_rgba(225,29,72,0.5)]">
+                                        Confirm Delete
+                                      </button>
+                                      <button type="button" onclick="state.deleteReviewConfirmId = null; renderApp();" class="bg-[#160B04] text-orange-200 text-xs px-2.5 py-1.5 rounded-lg border border-[#FF5500]/30">
+                                        Cancel
+                                      </button>
+                                    </div>`
+                                  : `<button type="button" onclick="state.deleteReviewConfirmId = '${safeRevId}'; renderApp();" class="w-full bg-rose-500/15 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/40 font-black text-xs py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5">
+                                      ${iconSvg('trash', 'w-3.5 h-3.5')}
+                                      <span>🗑 Delete Review</span>
+                                    </button>`
+                              }
+                            </div>
+                          </div>
+                        `;
+                      })
+                      .join('')}
+                  </div>`
+            }
+          </div>
+        `;
       }
 
       return `
@@ -4212,6 +4543,7 @@
                   { id: 'upload', label: state.editingPairId ? 'Edit Pair' : '+ Upload Pair' },
                   { id: 'orders', label: `Orders (${state.orders.length})` },
                   { id: 'delivery_slip', label: '📦 Delivery Slip Maker' },
+                  { id: 'reviews_manager', label: `★ Reviews Manager (${state.reviews.length})` },
                   { id: 'policy', label: 'COD Policy & Banner' },
                   { id: 'excel_ai', label: 'Excel CSV Hub' }
                 ]
@@ -4377,6 +4709,60 @@
           </div>`
         : '';
 
+      const reviewLightboxHtml = state.reviewLightboxModal
+        ? `<div onclick="closeReviewPhotoLightbox()" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4 sm:p-6">
+            <div onclick="event.stopPropagation()" class="relative max-w-3xl w-full bg-[#140903] border-2 border-[#FF5500] rounded-3xl overflow-hidden shadow-[0_0_60px_rgba(255,85,0,0.45)] flex flex-col">
+              <div class="flex items-center justify-between px-5 py-3.5 bg-[#0A0401] border-b border-[#FF5500]/30">
+                <div class="flex items-center gap-2.5">
+                  <span class="bg-[#FF5500] text-black text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full">
+                    Verified Buyer Photo
+                  </span>
+                  <span class="text-xs sm:text-sm font-black text-white">
+                    ${escapeHtml(state.reviewLightboxModal.name || 'Customer')} • ${escapeHtml(state.reviewLightboxModal.city || 'Pakistan')}
+                  </span>
+                  <span class="text-amber-400 text-xs tracking-widest">
+                    ${'★'.repeat(Math.min(5, Math.max(1, Number(state.reviewLightboxModal.rating) || 5)))}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onclick="closeReviewPhotoLightbox()"
+                  class="w-8 h-8 rounded-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black flex items-center justify-center text-sm transition"
+                  title="Close Full Frame"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div class="bg-[#060200] flex items-center justify-center max-h-[72vh] overflow-hidden p-2 sm:p-4">
+                <img
+                  src="${escapeHtml(state.reviewLightboxModal.imageUrl)}"
+                  alt="Full frame customer review photo"
+                  class="max-w-full max-h-[68vh] w-auto h-auto object-contain rounded-2xl border border-[#FF5500]/25"
+                />
+              </div>
+
+              <div class="p-4 sm:p-5 bg-[#0D0602] border-t border-[#FF5500]/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div class="space-y-1">
+                  <div class="text-xs font-black text-[#FF5500]">
+                    ${escapeHtml(state.reviewLightboxModal.pairName || '1-of-1 Authentic Pair')}
+                  </div>
+                  <p class="text-xs sm:text-sm text-orange-100/90 leading-relaxed">
+                    "${escapeHtml(state.reviewLightboxModal.comment || '')}"
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onclick="closeReviewPhotoLightbox()"
+                  class="bg-[#1A0D05] hover:bg-[#FF5500] text-orange-200 hover:text-black border border-[#FF5500]/45 font-black px-5 py-2.5 rounded-xl text-xs transition shrink-0"
+                >
+                  Close Preview
+                </button>
+              </div>
+            </div>
+          </div>`
+        : '';
+
       return `
         <footer class="relative z-10 border-t border-[#FF5500]/25 bg-[#090401] mt-16 py-10 px-4 sm:px-6">
           <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-6">
@@ -4400,6 +4786,7 @@
         ${cancelModalHtml}
         ${returnModalHtml}
         ${codModalHtml}
+        ${reviewLightboxHtml}
       `;
     }
 
@@ -4828,6 +5215,7 @@
       initGlobalParticleCanvas();
       startCountdownAndSecurityListeners();
       syncFromSupabase(true);
+      initSupabaseRealtimeSubscription();
     });
   </script>
 </body>

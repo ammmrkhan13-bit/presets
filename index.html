@@ -6,8 +6,6 @@
   <title>PRESETS — 1-of-1 Authentic Kicks | Pakistan</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Supabase JS SDK for Real-Time Instant Deletions & Updates -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- EmailJS Browser SDK for 2FA Security -->
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js" async></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -268,6 +266,9 @@
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
       Prefer: 'return=representation,resolution=merge-duplicates'
     };
 
@@ -402,6 +403,55 @@
       } catch (e) {}
     }
 
+    // Unlimited Local Storage Vault via IndexedDB (Bypasses 5MB localStorage limit for unlimited sneaker photos)
+    const idbVault = {
+      dbPromise: null,
+      open() {
+        if (this.dbPromise) return this.dbPromise;
+        this.dbPromise = new Promise((resolve) => {
+          if (typeof indexedDB === 'undefined') return resolve(null);
+          const req = indexedDB.open('presets_unlimited_vault_v16', 1);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains('kv')) {
+              db.createObjectStore('kv');
+            }
+          };
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = () => resolve(null);
+        });
+        return this.dbPromise;
+      },
+      async get(key) {
+        try {
+          const db = await this.open();
+          if (!db) return null;
+          return await new Promise((resolve) => {
+            const tx = db.transaction('kv', 'readonly');
+            const req = tx.objectStore('kv').get(key);
+            req.onsuccess = () => resolve(req.result ?? null);
+            req.onerror = () => resolve(null);
+          });
+        } catch (e) {
+          return null;
+        }
+      },
+      async set(key, val) {
+        try {
+          const db = await this.open();
+          if (!db) return;
+          await new Promise((resolve) => {
+            const tx = db.transaction('kv', 'readwrite');
+            tx.objectStore('kv').put(val, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          });
+        } catch (e) {}
+      }
+    };
+
+    let lastLocalInventoryMutationAt = 0;
+
     function getEffectivePairPrice(pair) {
       const base = Number(pair?.price ?? pair?.price_pkr) || 0;
       const disc = Math.min(90, Math.max(0, Number(pair?.discountPercent ?? pair?.discount_percent) || 0));
@@ -439,6 +489,32 @@
     // ==========================================
     // 3. SUPABASE 4-TABLE MAPPERS & REST CLIENT
     // ==========================================
+    function getDefaultImageAdjustments(count = 5) {
+      return Array.from({ length: count }, () => ({
+        zoom: 1,
+        x: 0,
+        y: 0,
+        fit: 'cover'
+      }));
+    }
+
+    function getPhotoAdjustment(pairOrForm, idx = 0) {
+      const list = Array.isArray(pairOrForm?.imageAdjustments) ? pairOrForm.imageAdjustments : [];
+      const item = list[idx] || {};
+      return {
+        zoom: Number(item.zoom ?? pairOrForm?.imageZoom ?? 1) || 1,
+        x: Number(item.x ?? 0) || 0,
+        y: Number(item.y ?? 0) || 0,
+        fit: String(item.fit || pairOrForm?.imageFit || 'cover')
+      };
+    }
+
+    function getPhotoInlineStyle(pairOrForm, idx = 0, extraZoomMultiplier = 1) {
+      const adj = getPhotoAdjustment(pairOrForm, idx);
+      const scale = (adj.zoom * extraZoomMultiplier).toFixed(3);
+      return `transform: translate(${adj.x}%, ${adj.y}%) scale(${scale}); transform-origin: center center;`;
+    }
+
     function extractMetaFromDescription(rawDesc = '') {
       const str = String(rawDesc || '');
       const match = str.match(/^\[META:([^\]]+)\]\s*/);
@@ -458,6 +534,7 @@
           imageRatio: '1:1',
           imageFit: 'cover',
           imageZoom: 1,
+          imageAdjustments: [],
           defectImages: []
         };
       }
@@ -479,6 +556,14 @@
           defectImages = [];
         }
       }
+      let imageAdjustments = [];
+      if (meta.imgadj) {
+        try {
+          imageAdjustments = JSON.parse(decodeURIComponent(meta.imgadj));
+        } catch (e) {
+          imageAdjustments = [];
+        }
+      }
       return {
         cleanDesc: str.slice(match[0].length),
         customPairId: meta.pairId || '',
@@ -494,6 +579,7 @@
         imageRatio: meta.ratio || '1:1',
         imageFit: meta.fit || 'cover',
         imageZoom: Number(meta.zoom) || 1,
+        imageAdjustments: Array.isArray(imageAdjustments) ? imageAdjustments : [],
         defectImages: Array.isArray(defectImages) ? defectImages : []
       };
     }
@@ -514,7 +600,8 @@
       const safeLaces = Number(extra.laces) || 9;
       const safeInside = Number(extra.inside) || 9;
       const safeDefects = encodeURIComponent(JSON.stringify(Array.isArray(defectImages) ? defectImages.slice(0, 5) : []));
-      return `[META:pairId=${safeId}|cat=${safeCat}|insole=${safeInsole}|disc=${safeDisc}|prepaid=${safePrepaid}|freedel=${safeFreeDel}|soles=${safeSoles}|body=${safeBody}|laces=${safeLaces}|inside=${safeInside}|ratio=${safeRatio}|fit=${safeFit}|zoom=${safeZoom}|defects=${safeDefects}] ${clean}`;
+      const safeImgAdj = encodeURIComponent(JSON.stringify(Array.isArray(extra.imageAdjustments) ? extra.imageAdjustments.slice(0, 5) : []));
+      return `[META:pairId=${safeId}|cat=${safeCat}|insole=${safeInsole}|disc=${safeDisc}|prepaid=${safePrepaid}|freedel=${safeFreeDel}|soles=${safeSoles}|body=${safeBody}|laces=${safeLaces}|inside=${safeInside}|ratio=${safeRatio}|fit=${safeFit}|zoom=${safeZoom}|imgadj=${safeImgAdj}|defects=${safeDefects}] ${clean}`;
     }
 
     function mapSettingsFromDB(row, fallback = {}) {
@@ -605,6 +692,7 @@
         imageRatio: String(metaInfo.imageRatio || '1:1'),
         imageFit: String(metaInfo.imageFit || 'cover'),
         imageZoom: Number(metaInfo.imageZoom || 1),
+        imageAdjustments: Array.isArray(metaInfo.imageAdjustments) ? metaInfo.imageAdjustments : [],
         defectImages: Array.isArray(metaInfo.defectImages) ? metaInfo.defectImages : [],
         name: displayName,
         title: displayName,
@@ -662,7 +750,8 @@
           soles: pair.condition?.soles ?? 9,
           body: pair.condition?.body ?? 9,
           laces: pair.condition?.laces ?? 9,
-          inside: pair.condition?.inside ?? 9
+          inside: pair.condition?.inside ?? 9,
+          imageAdjustments: Array.isArray(pair.imageAdjustments) ? pair.imageAdjustments : []
         }
       );
 
@@ -831,6 +920,7 @@
       async fetchSettings() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_settings?id=eq.global_config&select=*`, {
           method: 'GET',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase presets_settings HTTP ${res.status}`);
@@ -841,6 +931,7 @@
         const payload = mapSettingsToDB(cfg);
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_settings?on_conflict=id`, {
           method: 'POST',
+          cache: 'no-store',
           headers: supabaseHeaders,
           body: JSON.stringify(payload)
         });
@@ -849,8 +940,9 @@
         return Array.isArray(data) && data[0] ? data[0] : payload;
       },
       async fetchProducts() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?select=*&order=created_at.desc`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?select=*&order=created_at.desc&limit=10000`, {
           method: 'GET',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase presets_inventory HTTP ${res.status}`);
@@ -861,6 +953,7 @@
         const payload = mapProductToDB(pair);
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?on_conflict=id`, {
           method: 'POST',
+          cache: 'no-store',
           headers: supabaseHeaders,
           body: JSON.stringify(payload)
         });
@@ -871,6 +964,7 @@
       async deleteProduct(id) {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?id=eq.${encodeURIComponent(id)}`, {
           method: 'DELETE',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase delete inventory HTTP ${res.status}`);
@@ -878,6 +972,7 @@
       async fetchOrders() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?select=*&order=created_at.desc`, {
           method: 'GET',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase presets_orders HTTP ${res.status}`);
@@ -888,6 +983,7 @@
         const payload = mapOrderToDB(order);
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?on_conflict=order_id`, {
           method: 'POST',
+          cache: 'no-store',
           headers: supabaseHeaders,
           body: JSON.stringify(payload)
         });
@@ -897,6 +993,7 @@
       async deleteOrder(orderId) {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?order_id=eq.${encodeURIComponent(orderId)}`, {
           method: 'DELETE',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase delete order HTTP ${res.status}`);
@@ -904,6 +1001,7 @@
       async fetchDeliverySlips() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?select=*&order=created_at.desc`, {
           method: 'GET',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase presets_delivery_slips HTTP ${res.status}`);
@@ -914,6 +1012,7 @@
         const payload = mapSlipToDB(slip);
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?on_conflict=slip_id`, {
           method: 'POST',
+          cache: 'no-store',
           headers: supabaseHeaders,
           body: JSON.stringify(payload)
         });
@@ -924,6 +1023,7 @@
       async deleteDeliverySlip(slipId) {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?slip_id=eq.${encodeURIComponent(slipId)}`, {
           method: 'DELETE',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase delete slip HTTP ${res.status}`);
@@ -931,6 +1031,7 @@
       async fetchReviews() {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?select=*&order=created_at.desc`, {
           method: 'GET',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase reviews HTTP ${res.status}`);
@@ -941,6 +1042,7 @@
         const payload = mapReviewToDB(review);
         const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews`, {
           method: 'POST',
+          cache: 'no-store',
           headers: supabaseHeaders,
           body: JSON.stringify(payload)
         });
@@ -951,19 +1053,12 @@
       async deleteReview(reviewId) {
         const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?id=eq.${encodeURIComponent(reviewId)}`, {
           method: 'DELETE',
+          cache: 'no-store',
           headers: supabaseHeaders
         });
         if (!res.ok) throw new Error(`Supabase delete review HTTP ${res.status}`);
       }
     };
-
-    // Initialize Official Supabase Realtime Client
-    let supabaseRealtimeClient = null;
-    try {
-      if (window.supabase && typeof window.supabase.createClient === 'function') {
-        supabaseRealtimeClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      }
-    } catch (e) {}
 
     // ==========================================
     // 4. APPLICATION STATE (PLAIN JS)
@@ -1051,7 +1146,7 @@
       codSuccessModal: null,
       prepaidConfirmScreen: null,
       simplePrepaidSuccessOrder: null,
-      isAdminAuthenticated: false,
+      isAdminAuthenticated: Boolean(safeLoad('presets_boss_auth_v16', false)),
       adminPasswordInput: '',
       otpStep: 'password',
       generatedOtp: '',
@@ -1064,12 +1159,14 @@
       bossTab: 'inventory',
       deleteConfirmId: null,
       editingPairId: null,
+      editingPhotoIdx: 0,
       aiVisionStatus: '',
       pairForm: {
         customPairId: '',
         imageRatio: '1:1',
         imageFit: 'cover',
         imageZoom: 1,
+        imageAdjustments: getDefaultImageAdjustments(5),
         name: '',
         brand: 'Nike',
         category: 'Casual',
@@ -1113,8 +1210,13 @@
       safeSave('presets_reviews_v16', state.reviews);
       safeSave('presets_config_v16', state.storeConfig);
       safeSave('presets_cart_v16', state.cart);
+      safeSave('presets_boss_auth_v16', state.isAdminAuthenticated);
       safeSave('presets_sec_attempts', state.failedLoginAttempts);
       safeSave('presets_sec_lockout', state.lockoutUntil);
+      idbVault.set('presets_sneakers_v16', state.sneakers);
+      idbVault.set('presets_orders_v16', state.orders);
+      idbVault.set('presets_slips_v16', state.deliverySlips);
+      idbVault.set('presets_reviews_v16', state.reviews);
     }
 
     let toastTimeout = null;
@@ -1303,7 +1405,9 @@
       const el = document.activeElement;
       if (!el) return false;
       const tag = (el.tagName || '').toUpperCase();
-      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (state.activeView === 'boss' && state.bossTab === 'upload') return true;
+      return false;
     }
 
     async function syncFromSupabase(silent = false) {
@@ -1327,10 +1431,19 @@
           }
         }
 
-        // Authoritative overwrite: if an item is deleted in Supabase, it is immediately removed locally
+        // Authoritative un-cached sync: merges any brand-new local uploads still in-flight so newly added pairs show immediately
         if (productsRes.status === 'fulfilled') {
           anyConnected = true;
-          state.sneakers = productsRes.value;
+          const remoteProducts = productsRes.value;
+          if (Date.now() - lastLocalInventoryMutationAt <= 6000) {
+            const remoteIds = new Set(remoteProducts.map((p) => String(p.id)));
+            const inFlightLocal = state.sneakers.filter(
+              (localPair) => !remoteIds.has(String(localPair.id)) && Date.now() - (localPair.createdAt || 0) <= 15000
+            );
+            state.sneakers = [...inFlightLocal, ...remoteProducts];
+          } else {
+            state.sneakers = remoteProducts;
+          }
           const validIds = new Set(state.sneakers.map((s) => String(s.id)));
           state.cart = state.cart.filter((id) => validIds.has(String(id)));
           if (state.activeView === 'product' && state.selectedPairId && !validIds.has(String(state.selectedPairId))) {
@@ -1382,89 +1495,7 @@
     }
 
     function initSupabaseRealtimeSubscription() {
-      if (!supabaseRealtimeClient) return;
-      try {
-        const channel = supabaseRealtimeClient
-          .channel('presets-realtime-sync')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'presets_inventory' },
-            (payload) => {
-              if (payload.eventType === 'DELETE' && payload.old && payload.old.id !== undefined) {
-                const deletedId = String(payload.old.id);
-                state.sneakers = state.sneakers.filter((s) => String(s.id) !== deletedId);
-                state.cart = state.cart.filter((id) => String(id) !== deletedId);
-                if (String(state.selectedPairId) === deletedId) {
-                  state.selectedPairId = null;
-                  if (state.activeView === 'product') state.activeView = 'home';
-                }
-                persistAllLocal();
-                renderApp();
-                showToast('Pair deleted from database in real-time.');
-              } else {
-                syncFromSupabase(true);
-              }
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'reviews' },
-            (payload) => {
-              if (payload.eventType === 'DELETE' && payload.old && payload.old.id !== undefined) {
-                const deletedId = String(payload.old.id);
-                state.reviews = state.reviews.filter((r) => String(r.id) !== deletedId);
-                if (state.reviewLightboxModal && String(state.reviewLightboxModal.id) === deletedId) {
-                  state.reviewLightboxModal = null;
-                }
-                persistAllLocal();
-                renderApp();
-                showToast('Review deleted from database in real-time.');
-              } else {
-                syncFromSupabase(true);
-              }
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'presets_orders' },
-            (payload) => {
-              if (payload.eventType === 'DELETE' && payload.old && payload.old.order_id !== undefined) {
-                const deletedOrderId = String(payload.old.order_id);
-                state.orders = state.orders.filter(
-                  (o) => String(o.orderNumber) !== deletedOrderId && String(o.id) !== deletedOrderId
-                );
-                persistAllLocal();
-                renderApp();
-              } else {
-                syncFromSupabase(true);
-              }
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'presets_delivery_slips' },
-            (payload) => {
-              if (payload.eventType === 'DELETE' && payload.old && payload.old.slip_id !== undefined) {
-                const deletedSlipId = String(payload.old.slip_id);
-                state.deliverySlips = state.deliverySlips.filter((s) => String(s.slipId) !== deletedSlipId);
-                persistAllLocal();
-                renderApp();
-              } else {
-                syncFromSupabase(true);
-              }
-            }
-          )
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'presets_settings' },
-            () => {
-              syncFromSupabase(true);
-            }
-          )
-          .subscribe();
-      } catch (e) {}
-
-      // Instant background sync when user switches back to tab or focuses window
+      // Instant background HTTP REST sync when user switches back to tab or focuses window
       window.addEventListener('focus', () => syncFromSupabase(true));
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
@@ -1472,12 +1503,12 @@
         }
       });
 
-      // Lightweight periodic background sync every 8 seconds so deletions never lag
+      // Fast HTTP REST sync every 3.5 seconds (WebSocket-free so Canvas never throws SecurityError)
       setInterval(() => {
         if (document.visibilityState === 'visible' && !isUserTypingInInput()) {
           syncFromSupabase(true);
         }
-      }, 8000);
+      }, 3500);
     }
 
     async function pushAllLocalToSupabase() {
@@ -1508,6 +1539,7 @@
       renderApp();
       if (scrollTop) window.scrollTo({ top: 0, behavior: 'smooth' });
     }
+    const setActiveView = setView;
 
     function openProductInspection(pairId) {
       state.selectedPairId = pairId;
@@ -1967,12 +1999,27 @@
       if (state.userEnteredOtp.trim() === state.generatedOtp.trim()) {
         state.isAdminAuthenticated = true;
         state.otpStatusMessage = '';
-        showToast('Access Granted! Welcome to Boss Mode.');
+        safeSave('presets_boss_auth_v16', true);
+        persistAllLocal();
+        showToast('Access Granted! Boss Mode will stay logged in until you logout.');
       } else {
         state.otpStatusType = 'error';
         state.otpStatusMessage = 'Invalid 6-digit code. Please try again.';
         showToast('Incorrect OTP code.');
       }
+      renderApp();
+    }
+
+    function logoutBossMode() {
+      state.isAdminAuthenticated = false;
+      state.adminPasswordInput = '';
+      state.userEnteredOtp = '';
+      state.generatedOtp = '';
+      state.otpStep = 'password';
+      state.otpStatusMessage = '';
+      safeSave('presets_boss_auth_v16', false);
+      persistAllLocal();
+      showToast('Logged out of Boss Mode.');
       renderApp();
     }
 
@@ -2364,54 +2411,222 @@
     }
 
     async function handleDevicePhotoUpload(inputEl) {
-      const files = Array.from(inputEl.files || []);
-      if (files.length === 0) return;
-      const remainingSlots = 5 - state.pairForm.images.length;
-      if (remainingSlots <= 0) {
-        showToast('Maximum 5 photos allowed per pair.');
-        inputEl.value = '';
-        return;
-      }
-      const selectedFiles = files.slice(0, remainingSlots);
-      state.aiVisionStatus = 'Checking photo...';
-      renderApp();
+      try {
+        // Snapshot files immediately BEFORE any DOM re-render can destroy the input element
+        const rawFiles = inputEl && inputEl.files ? Array.from(inputEl.files) : [];
+        if (rawFiles.length === 0) return;
 
-      const readAndCompressImage = (file) =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            const img = new Image();
-            img.onload = () => {
-              const canvas = document.createElement('canvas');
-              const maxDim = 800;
-              let w = img.width;
-              let h = img.height;
-              if (w > h && w > maxDim) {
-                h = Math.round((h * maxDim) / w);
-                w = maxDim;
-              } else if (h > maxDim) {
-                w = Math.round((w * maxDim) / h);
-                h = maxDim;
+        if (!Array.isArray(state.pairForm.images)) {
+          state.pairForm.images = [];
+        }
+        if (!Array.isArray(state.pairForm.imageAdjustments)) {
+          state.pairForm.imageAdjustments = getDefaultImageAdjustments(5);
+        }
+
+        const remainingSlots = 5 - state.pairForm.images.length;
+        if (remainingSlots <= 0) {
+          showToast('Maximum 5 photos allowed per pair.');
+          inputEl.value = '';
+          return;
+        }
+
+        const selectedFiles = rawFiles.slice(0, remainingSlots);
+        showToast(`Uploading ${selectedFiles.length} photo(s)...`);
+
+        const readAndCompressImage = (file) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onerror = () => resolve(null);
+            reader.onload = (event) => {
+              const rawDataUrl = event?.target?.result;
+              if (!rawDataUrl) {
+                resolve(null);
+                return;
               }
-              canvas.width = w;
-              canvas.height = h;
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(img, 0, 0, w, h);
-              resolve(canvas.toDataURL('image/jpeg', 0.72));
+              const img = new Image();
+              // Fallback to raw DataURL if browser cannot decode image onto canvas
+              img.onerror = () => resolve(rawDataUrl);
+              img.onload = () => {
+                try {
+                  const canvas = document.createElement('canvas');
+                  const maxDim = 900;
+                  let w = img.width || 800;
+                  let h = img.height || 800;
+                  if (w > h && w > maxDim) {
+                    h = Math.round((h * maxDim) / w);
+                    w = maxDim;
+                  } else if (h > maxDim) {
+                    w = Math.round((w * maxDim) / h);
+                    h = maxDim;
+                  }
+                  canvas.width = w;
+                  canvas.height = h;
+                  const ctx = canvas.getContext('2d');
+                  ctx.drawImage(img, 0, 0, w, h);
+                  resolve(canvas.toDataURL('image/jpeg', 0.78));
+                } catch (err) {
+                  resolve(rawDataUrl);
+                }
+              };
+              img.src = rawDataUrl;
             };
-            img.src = event.target.result;
-          };
-          reader.readAsDataURL(file);
-        });
+            reader.readAsDataURL(file);
+          });
 
-      const processed = await Promise.all(selectedFiles.map(readAndCompressImage));
-      state.pairForm.images = [...state.pairForm.images, ...processed].slice(0, 5);
-      if (!state.pairForm.name.trim()) {
-        state.pairForm.name = 'Air Force 1 Low Retro';
+        const processed = (await Promise.all(selectedFiles.map(readAndCompressImage))).filter(Boolean);
+        if (processed.length === 0) {
+          showToast('Could not read the selected photo(s). Please try a JPG/PNG image.');
+          return;
+        }
+
+        const prevLen = state.pairForm.images.length;
+        state.pairForm.images = [...state.pairForm.images, ...processed].slice(0, 5);
+        while (state.pairForm.imageAdjustments.length < 5) {
+          state.pairForm.imageAdjustments.push({
+            zoom: Number(state.pairForm.imageZoom) || 1,
+            x: 0,
+            y: 0,
+            fit: state.pairForm.imageFit || 'cover'
+          });
+        }
+        state.editingPhotoIdx = prevLen < state.pairForm.images.length ? prevLen : 0;
+        state.aiVisionStatus = `✓ Uploaded ${processed.length} photo(s) (${state.pairForm.images.length}/5 total). Click any photo below to adjust its Zoom, Position & Rotation!`;
+        showToast(`Uploaded ${processed.length} photo(s) successfully!`);
+        renderApp();
+      } catch (err) {
+        showToast('Error uploading photo: ' + (err?.message || 'Try again'));
       }
-      state.aiVisionStatus = `Uploaded ${processed.length} photo(s).`;
-      showToast(`Uploaded ${processed.length} photo(s).`);
-      inputEl.value = '';
+    }
+
+    function ensurePairFormAdjustmentsArray() {
+      if (!Array.isArray(state.pairForm.imageAdjustments)) {
+        state.pairForm.imageAdjustments = getDefaultImageAdjustments(5);
+      }
+      while (state.pairForm.imageAdjustments.length < 5) {
+        state.pairForm.imageAdjustments.push({
+          zoom: Number(state.pairForm.imageZoom) || 1,
+          x: 0,
+          y: 0,
+          fit: state.pairForm.imageFit || 'cover'
+        });
+      }
+    }
+
+    function updateSelectedPhotoAdjustment(field, value, syncDOMOnly = false) {
+      ensurePairFormAdjustmentsArray();
+      const idx = Math.max(0, Math.min(4, Number(state.editingPhotoIdx) || 0));
+      const cur = state.pairForm.imageAdjustments[idx] || { zoom: 1, x: 0, y: 0, fit: 'cover' };
+      const updated = { ...cur, [field]: value };
+      state.pairForm.imageAdjustments[idx] = updated;
+      if (idx === 0) {
+        if (field === 'zoom') state.pairForm.imageZoom = Number(value) || 1;
+        if (field === 'fit') state.pairForm.imageFit = value;
+      }
+
+      if (syncDOMOnly) {
+        const previewImg = document.getElementById('boss-live-photo-preview-img');
+        const thumbImg = document.getElementById(`boss-thumb-img-${idx}`);
+        const styleStr = getPhotoInlineStyle(state.pairForm, idx);
+        if (previewImg) previewImg.setAttribute('style', styleStr);
+        if (thumbImg) thumbImg.setAttribute('style', styleStr);
+        const zoomLabel = document.getElementById('boss-adj-zoom-label');
+        const xLabel = document.getElementById('boss-adj-x-label');
+        const yLabel = document.getElementById('boss-adj-y-label');
+        if (zoomLabel) zoomLabel.textContent = `${Number(updated.zoom).toFixed(2)}x`;
+        if (xLabel) xLabel.textContent = `${updated.x}%`;
+        if (yLabel) yLabel.textContent = `${updated.y}%`;
+      } else {
+        renderApp();
+      }
+    }
+
+    function applyAdjustmentToAllUploadedPhotos() {
+      ensurePairFormAdjustmentsArray();
+      const idx = Math.max(0, Math.min(4, Number(state.editingPhotoIdx) || 0));
+      const source = state.pairForm.imageAdjustments[idx] || { zoom: 1, x: 0, y: 0, fit: 'cover' };
+      state.pairForm.imageAdjustments = state.pairForm.imageAdjustments.map(() => ({ ...source }));
+      state.pairForm.imageZoom = Number(source.zoom) || 1;
+      state.pairForm.imageFit = source.fit || 'cover';
+      showToast('Applied Zoom, Position & Fit settings to all uploaded photos!');
+      renderApp();
+    }
+
+    function resetSelectedPhotoAdjustment() {
+      ensurePairFormAdjustmentsArray();
+      const idx = Math.max(0, Math.min(4, Number(state.editingPhotoIdx) || 0));
+      state.pairForm.imageAdjustments[idx] = { zoom: 1, x: 0, y: 0, fit: 'cover' };
+      if (idx === 0) {
+        state.pairForm.imageZoom = 1;
+        state.pairForm.imageFit = 'cover';
+      }
+      showToast(`Reset Photo #${idx + 1} to default 1.0x centered frame.`);
+      renderApp();
+    }
+
+    function rotateUploadedPhoto90(idx) {
+      const src = state.pairForm.images?.[idx];
+      if (!src) return;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.height;
+        canvas.height = img.width;
+        const ctx = canvas.getContext('2d');
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+        state.pairForm.images[idx] = canvas.toDataURL('image/jpeg', 0.82);
+        showToast(`Rotated Photo #${idx + 1} by 90°!`);
+        renderApp();
+      };
+      img.src = src;
+    }
+
+    function moveUploadedPhoto(idx, dir) {
+      ensurePairFormAdjustmentsArray();
+      const targetIdx = idx + dir;
+      if (targetIdx < 0 || targetIdx >= state.pairForm.images.length) return;
+      const imgs = [...state.pairForm.images];
+      const adjs = [...state.pairForm.imageAdjustments];
+      [imgs[idx], imgs[targetIdx]] = [imgs[targetIdx], imgs[idx]];
+      [adjs[idx], adjs[targetIdx]] = [adjs[targetIdx], adjs[idx]];
+      state.pairForm.images = imgs;
+      state.pairForm.imageAdjustments = adjs;
+      state.editingPhotoIdx = targetIdx;
+      state.pairForm.imageZoom = Number(adjs[0]?.zoom) || 1;
+      state.pairForm.imageFit = adjs[0]?.fit || 'cover';
+      renderApp();
+    }
+
+    function setUploadedPhotoAsCover(idx) {
+      if (idx <= 0 || idx >= state.pairForm.images.length) return;
+      ensurePairFormAdjustmentsArray();
+      const imgs = [...state.pairForm.images];
+      const adjs = [...state.pairForm.imageAdjustments];
+      const [chosenImg] = imgs.splice(idx, 1);
+      const [chosenAdj] = adjs.splice(idx, 1);
+      imgs.unshift(chosenImg);
+      adjs.unshift(chosenAdj);
+      state.pairForm.images = imgs;
+      state.pairForm.imageAdjustments = adjs;
+      state.editingPhotoIdx = 0;
+      state.pairForm.imageZoom = Number(adjs[0]?.zoom) || 1;
+      state.pairForm.imageFit = adjs[0]?.fit || 'cover';
+      showToast('Set as Cover Photo (#1)!');
+      renderApp();
+    }
+
+    function removeUploadedPhotoAt(idx) {
+      ensurePairFormAdjustmentsArray();
+      state.pairForm.images.splice(idx, 1);
+      state.pairForm.imageAdjustments.splice(idx, 1);
+      while (state.pairForm.imageAdjustments.length < 5) {
+        state.pairForm.imageAdjustments.push({ zoom: 1, x: 0, y: 0, fit: 'cover' });
+      }
+      if (state.editingPhotoIdx >= state.pairForm.images.length) {
+        state.editingPhotoIdx = Math.max(0, state.pairForm.images.length - 1);
+      }
       renderApp();
     }
 
@@ -2466,12 +2681,14 @@
 
     function resetPairForm() {
       state.editingPairId = null;
+      state.editingPhotoIdx = 0;
       state.aiVisionStatus = '';
       state.pairForm = {
         customPairId: '',
         imageRatio: '1:1',
         imageFit: 'cover',
         imageZoom: 1,
+        imageAdjustments: getDefaultImageAdjustments(5),
         name: '',
         brand: 'Nike',
         category: 'Casual',
@@ -2497,11 +2714,26 @@
       const pair = state.sneakers.find((s) => s.id === pairId);
       if (!pair) return;
       state.editingPairId = pair.id;
+      state.editingPhotoIdx = 0;
+      const baseZoom = Number(pair.imageZoom) || 1;
+      const baseFit = pair.imageFit || 'cover';
+      const existingAdjs = Array.isArray(pair.imageAdjustments) && pair.imageAdjustments.length > 0
+        ? pair.imageAdjustments.map((a) => ({
+            zoom: Number(a?.zoom ?? baseZoom) || 1,
+            x: Number(a?.x ?? 0) || 0,
+            y: Number(a?.y ?? 0) || 0,
+            fit: String(a?.fit || baseFit)
+          }))
+        : Array.from({ length: 5 }, () => ({ zoom: baseZoom, x: 0, y: 0, fit: baseFit }));
+      while (existingAdjs.length < 5) {
+        existingAdjs.push({ zoom: baseZoom, x: 0, y: 0, fit: baseFit });
+      }
       state.pairForm = {
         customPairId: getPairCode(pair),
         imageRatio: '1:1',
-        imageFit: pair.imageFit || 'cover',
-        imageZoom: Number(pair.imageZoom) || 1,
+        imageFit: existingAdjs[0]?.fit || baseFit,
+        imageZoom: Number(existingAdjs[0]?.zoom) || baseZoom,
+        imageAdjustments: existingAdjs,
         name: pair.name || pair.title || '',
         brand: pair.brand || 'PRESETS',
         category: pair.category || 'Casual',
@@ -2541,12 +2773,23 @@
       const origPrice = Number(state.pairForm.price) || 0;
       const salePrice = Math.round(origPrice * (1 - discPct / 100));
 
+      ensurePairFormAdjustmentsArray();
+      const normalizedAdjustments = state.pairForm.images
+        .slice(0, 5)
+        .map((_, idx) => getPhotoAdjustment(state.pairForm, idx));
+
+      let recordId = state.editingPairId ? String(state.editingPairId) : finalCustomPairId;
+      if (!state.editingPairId && state.sneakers.some((s) => String(s.id) === String(recordId))) {
+        recordId = `${finalCustomPairId}-${Date.now().toString().slice(-4)}`;
+      }
+
       const formattedPair = {
-        id: state.editingPairId ? String(state.editingPairId) : finalCustomPairId,
+        id: recordId,
         customPairId: finalCustomPairId,
         imageRatio: '1:1',
-        imageFit: state.pairForm.imageFit || 'cover',
-        imageZoom: Number(state.pairForm.imageZoom) || 1,
+        imageFit: normalizedAdjustments[0]?.fit || state.pairForm.imageFit || 'cover',
+        imageZoom: Number(normalizedAdjustments[0]?.zoom || state.pairForm.imageZoom) || 1,
+        imageAdjustments: normalizedAdjustments,
         defectImages: Array.isArray(state.pairForm.defectImages) ? state.pairForm.defectImages.slice(0, 5) : [],
         name: state.pairForm.name.trim(),
         title: state.pairForm.name.trim(),
@@ -2572,13 +2815,15 @@
         createdAt: Date.now()
       };
 
+      lastLocalInventoryMutationAt = Date.now();
+
       if (state.editingPairId) {
         state.sneakers = state.sneakers.map((s) => (s.id === state.editingPairId ? formattedPair : s));
-        supabaseRest.upsertProduct(formattedPair).catch(() => {});
+        supabaseRest.upsertProduct(formattedPair).then(() => syncFromSupabase(true)).catch(() => {});
         showToast(`Updated ${formattedPair.name} (Pair ID #${finalCustomPairId}) in presets_inventory!`);
       } else {
         state.sneakers = [formattedPair, ...state.sneakers];
-        supabaseRest.upsertProduct(formattedPair).catch(() => {});
+        supabaseRest.upsertProduct(formattedPair).then(() => syncFromSupabase(true)).catch(() => {});
         showToast(`Published ${formattedPair.name} (Pair ID #${finalCustomPairId}) to presets_inventory!`);
       }
 
@@ -2589,6 +2834,7 @@
     }
 
     function togglePairSoldStatus(pairId) {
+      lastLocalInventoryMutationAt = Date.now();
       state.sneakers = state.sneakers.map((pair) => {
         if (pair.id !== pairId) return pair;
         const code = getPairCode(pair);
@@ -2603,6 +2849,7 @@
     }
 
     function deletePairPermanently(pairId) {
+      lastLocalInventoryMutationAt = Date.now();
       state.sneakers = state.sneakers.filter((s) => s.id !== pairId);
       state.cart = state.cart.filter((id) => id !== pairId);
       supabaseRest.deleteProduct(pairId).catch(() => {});
@@ -2896,15 +3143,16 @@
           const isSold = pair.status !== 'available' || pair.sold === true || pair.in_stock === false;
           const avgScore = getAverageCondition(pair.condition);
           const coverImg = escapeHtml(pair.images?.[0] || pair.image_url || pair.image || '');
-          const fitClass = pair.imageFit === 'contain' ? 'object-contain p-2' : 'object-cover';
-          const zoomScale = Number(pair.imageZoom) || 1;
+          const coverAdj = getPhotoAdjustment(pair, 0);
+          const fitClass = coverAdj.fit === 'contain' ? 'object-contain p-2' : 'object-cover';
+          const inlineTransform = getPhotoInlineStyle(pair, 0);
           const safeId = escapeHtml(pair.id);
 
           return `
             <div class="presets-3d-card group bg-[#150A03] border border-[#FF5500]/25 hover:border-[#FF5500] rounded-2xl overflow-hidden flex flex-col justify-between">
               <div>
                 <div onclick="openProductInspection('${safeId}')" class="relative w-full aspect-square bg-[#090401] overflow-hidden cursor-pointer">
-                  <img src="${coverImg}" alt="${displayTitle}" style="transform: scale(${zoomScale});" class="w-full h-full ${fitClass} transition duration-500 ${isSold ? 'opacity-45 grayscale' : ''}" />
+                  <img src="${coverImg}" alt="${displayTitle}" loading="lazy" decoding="async" style="${inlineTransform}" class="w-full h-full ${fitClass} transition duration-500 ${isSold ? 'opacity-45 grayscale' : ''}" />
                   <div class="absolute top-2 left-2 flex flex-wrap gap-1">
                     <span class="bg-[#FF5500] text-black text-[9px] font-black uppercase px-1.5 py-0.5 rounded">${displayBrand}</span>
                     <span class="bg-black/80 backdrop-blur-md text-orange-200 border border-[#FF5500]/30 text-[9px] font-bold px-1.5 py-0.5 rounded">${escapeHtml(pair.category || 'Casual')}</span>
@@ -3162,8 +3410,9 @@
 
       const pairCode = getPairCode(selectedPair);
       const currentImg = selectedPair.images?.[state.activeImageIdx] || selectedPair.images?.[0] || selectedPair.image_url || selectedPair.image || '';
-      const scaleVal = state.isImageZoomed ? (Number(selectedPair.imageZoom) || 1) * 1.25 : Number(selectedPair.imageZoom) || 1;
-      const fitClass = selectedPair.imageFit === 'contain' ? 'object-contain p-4' : 'object-cover';
+      const activeAdj = getPhotoAdjustment(selectedPair, state.activeImageIdx);
+      const fitClass = activeAdj.fit === 'contain' ? 'object-contain p-4' : 'object-cover';
+      const activeStyle = getPhotoInlineStyle(selectedPair, state.activeImageIdx, state.isImageZoomed ? 1.28 : 1);
 
       let aiTabContent = '';
       if (state.aiProductTab === 'fit') {
@@ -3222,14 +3471,15 @@
           const isSold = pair.status !== 'available' || pair.sold === true || pair.in_stock === false;
           const avgScore = getAverageCondition(pair.condition);
           const coverImg = escapeHtml(pair.images?.[0] || pair.image_url || pair.image || '');
-          const pFitClass = pair.imageFit === 'contain' ? 'object-contain p-2' : 'object-cover';
-          const zoomScale = Number(pair.imageZoom) || 1;
+          const pAdj = getPhotoAdjustment(pair, 0);
+          const pFitClass = pAdj.fit === 'contain' ? 'object-contain p-2' : 'object-cover';
+          const pStyle = getPhotoInlineStyle(pair, 0);
           const safeId = escapeHtml(pair.id);
 
           return `
             <div class="group bg-[#150A03] border border-[#FF5500]/25 hover:border-[#FF5500] rounded-2xl overflow-hidden flex flex-col justify-between transition shadow-[0_0_20px_rgba(255,85,0,0.08)] hover:shadow-[0_0_25px_rgba(255,85,0,0.25)]">
               <div onclick="openProductInspection('${safeId}')" class="relative w-full aspect-square bg-[#090401] overflow-hidden cursor-pointer">
-                <img src="${coverImg}" alt="${displayTitle}" style="transform: scale(${zoomScale});" class="w-full h-full ${pFitClass} transition duration-500 ${isSold ? 'opacity-45 grayscale' : ''}" />
+                <img src="${coverImg}" alt="${displayTitle}" style="${pStyle}" class="w-full h-full ${pFitClass} transition duration-500 ${isSold ? 'opacity-45 grayscale' : ''}" />
                 <div class="absolute top-2 left-2 flex flex-wrap gap-1">
                   <span class="bg-black/80 text-orange-200 border border-[#FF5500]/30 text-[9px] font-bold px-1.5 py-0.5 rounded">${escapeHtml(pair.category || 'Casual')}</span>
                   ${hasDiscount ? `<span class="bg-[#FF5500] text-black text-[9px] font-black px-1.5 py-0.5 rounded">-${pair.discountPercent}%</span>` : ''}
@@ -3269,7 +3519,7 @@
           <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 bg-[#160B04] border border-[#FF5500]/45 rounded-3xl p-5 sm:p-10 shadow-[0_0_50px_rgba(255,85,0,0.16)]">
             <div class="lg:col-span-7 space-y-4">
               <div onclick="state.isImageZoomed = !state.isImageZoomed; renderApp();" class="relative w-full aspect-square max-h-[560px] bg-[#080301] rounded-2xl overflow-hidden border border-[#FF5500]/35 cursor-zoom-in group">
-                <img src="${escapeHtml(currentImg)}" alt="${escapeHtml(selectedPair.name || '')}" style="transform: scale(${scaleVal});" class="w-full h-full ${fitClass} transition duration-500 ${state.isImageZoomed ? 'cursor-zoom-out' : ''}" />
+                <img src="${escapeHtml(currentImg)}" alt="${escapeHtml(selectedPair.name || '')}" style="${activeStyle}" class="w-full h-full ${fitClass} transition duration-500 ${state.isImageZoomed ? 'cursor-zoom-out' : ''}" />
                 <div class="absolute top-4 left-4 flex flex-wrap gap-2">
                   <span class="bg-[#FF5500] text-black text-xs font-black px-3 py-1 rounded-lg">Pair ID: #${escapeHtml(pairCode)}</span>
                   <span class="bg-black/85 border border-[#FF5500]/40 text-orange-200 text-xs font-bold px-3 py-1 rounded-lg">Angle ${state.activeImageIdx + 1} of ${selectedPair.images?.length || 1}</span>
@@ -3283,11 +3533,16 @@
                       ${selectedPair.images
                         .slice(0, 5)
                         .map(
-                          (imgUrl, idx) => `
-                            <button onclick="state.activeImageIdx = ${idx}; state.isImageZoomed = false; renderApp();" class="h-20 sm:h-24 rounded-xl overflow-hidden border-2 transition ${state.activeImageIdx === idx ? 'border-[#FF5500] scale-105' : 'border-white/10 opacity-60 hover:opacity-100'}">
-                              <img src="${escapeHtml(imgUrl)}" alt="" class="w-full h-full object-cover" />
+                          (imgUrl, idx) => {
+                            const thumbAdj = getPhotoAdjustment(selectedPair, idx);
+                            const thumbFit = thumbAdj.fit === 'contain' ? 'object-contain p-1' : 'object-cover';
+                            const thumbStyle = getPhotoInlineStyle(selectedPair, idx);
+                            return `
+                            <button onclick="state.activeImageIdx = ${idx}; state.isImageZoomed = false; renderApp();" class="h-20 sm:h-24 rounded-xl overflow-hidden bg-[#080301] border-2 transition ${state.activeImageIdx === idx ? 'border-[#FF5500] scale-105' : 'border-white/10 opacity-60 hover:opacity-100'}">
+                              <img src="${escapeHtml(imgUrl)}" alt="" style="${thumbStyle}" class="w-full h-full ${thumbFit}" />
                             </button>
-                          `
+                          `;
+                          }
                         )
                         .join('')}
                     </div>`
@@ -3603,11 +3858,10 @@
 
     function renderPrepaidConfirmView() {
       const screen = state.prepaidConfirmScreen;
-      if (!screen) {
-        state.activeView = 'home';
+      if (!screen || !screen.order) {
         return renderHomeView();
       }
-      const orderNum = getOrderDisplayNumber(screen.order);
+      const dispNum = escapeHtml(getOrderDisplayNumber(screen.order));
       return `
         <main class="relative z-10 max-w-2xl mx-auto px-4 sm:px-6 py-12">
           <div class="bg-[#160B04] border border-[#FF5500]/50 rounded-3xl p-6 sm:p-10 text-center space-y-5 shadow-[0_0_45px_rgba(255,85,0,0.25)]">
@@ -3615,7 +3869,7 @@
               ${iconSvg('whatsapp', 'w-7 h-7')}
             </div>
             <span class="inline-block bg-[#FF5500] text-black text-xs font-black px-3.5 py-1 rounded-full">
-              ORDER #${escapeHtml(orderNum)} LOGGED
+              ORDER #${dispNum} LOGGED
             </span>
             <h1 class="text-2xl sm:text-3xl font-black text-white">
               Agar Pehla Button Kaam Nahi Kiya To Dubara Is Par Click Karein
@@ -3632,7 +3886,11 @@
                 ${iconSvg('whatsapp', 'w-4 h-4')}
                 <span>Agar Pehla Kaam Nahi Kiya To Dubara Is Par Click Karein (Open WhatsApp)</span>
               </button>
-              <button type="button" onclick="setView('home')" class="w-full bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 font-bold py-3 rounded-xl text-xs transition">
+              <button
+                type="button"
+                onclick="setView('home')"
+                class="w-full bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 font-bold py-3 rounded-xl text-xs transition"
+              >
                 Return to Storefront
               </button>
             </div>
@@ -3644,10 +3902,9 @@
     function renderSimplePrepaidDoneView() {
       const ord = state.simplePrepaidSuccessOrder;
       if (!ord) {
-        state.activeView = 'home';
         return renderHomeView();
       }
-      const orderNum = getOrderDisplayNumber(ord);
+      const dispNum = escapeHtml(getOrderDisplayNumber(ord));
       return `
         <main class="relative z-10 max-w-2xl mx-auto px-4 sm:px-6 py-12">
           <div class="bg-[#160B04] border border-[#FF5500]/50 rounded-3xl p-6 sm:p-10 text-center space-y-5 shadow-[0_0_45px_rgba(255,85,0,0.25)]">
@@ -3655,17 +3912,23 @@
               ${iconSvg('check', 'w-7 h-7')}
             </div>
             <span class="inline-block bg-[#FF5500] text-black text-xs font-black px-3.5 py-1 rounded-full">
-              ORDER #${escapeHtml(orderNum)} CONFIRMED
+              ORDER #${dispNum} CONFIRMED
             </span>
-            <h1 class="text-2xl sm:text-3xl font-black text-white">Your Order Has Been Placed!</h1>
+            <h1 class="text-2xl sm:text-3xl font-black text-white">
+              Your Order Has Been Placed!
+            </h1>
             <div class="bg-[#0A0401] border border-emerald-500/45 rounded-2xl p-4 text-sm sm:text-base text-emerald-300 font-bold leading-relaxed shadow-[0_0_20px_rgba(16,185,129,0.15)]">
               Your order has been placed, soon our team will contact you for payment and order confirmation.
             </div>
             <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-2xl p-4 text-xs text-orange-200/85 space-y-1">
-              <div><strong>Pair ID / Order Number:</strong> #${escapeHtml(orderNum)}</div>
+              <div><strong>Pair ID / Order Number:</strong> #${dispNum}</div>
               <div><strong>Total Prepaid Bill (5% OFF):</strong> ${formatPKR(ord.totals?.finalTotalWithShipping)}</div>
             </div>
-            <button type="button" onclick="setView('home')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition">
+            <button
+              type="button"
+              onclick="setView('home')"
+              class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition"
+            >
               Back to Store
             </button>
           </div>
@@ -3682,8 +3945,12 @@
           <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-6 sm:p-8 space-y-6">
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#FF5500]/25 pb-4">
               <div>
-                <span class="text-[11px] font-black uppercase tracking-widest text-[#FF5500]">OFFICIAL PRESETS BUYER PROTECTION & TERMS</span>
-                <h1 class="text-2xl sm:text-3xl font-black text-white mt-0.5">Store Return, Exchange & Payment Policies</h1>
+                <span class="text-[11px] font-black uppercase tracking-widest text-[#FF5500]">
+                  OFFICIAL PRESETS BUYER PROTECTION & TERMS
+                </span>
+                <h1 class="text-2xl sm:text-3xl font-black text-white mt-0.5">
+                  Store Return, Exchange & Payment Policies
+                </h1>
               </div>
               ${
                 isCodAdvancePolicyActive
@@ -3696,23 +3963,33 @@
 
             <div class="space-y-4 text-xs sm:text-sm text-orange-100/90 leading-relaxed">
               <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-1.5">
-                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">1. 1-Day Return & Exchange Policy on Unworn 1-of-1 Pairs (Severe Damage Guarantee)</h3>
-                <p>${escapeHtml(
-                  (state.storeConfig.returnExchangePolicy || '1-Day Return & Exchange Policy on unworn 1-of-1 pairs: Every sneaker at PRESETS is a 1-of-1 pre-loved authentic pair inspected across Soles, Body, Laces, and Inside. A pair can only be returned or exchanged within 1 day (24 hours) of delivery if it arrives severely damaged or completely different from what was shown and described on the inspection page. In the case of a severely damaged or misrepresented pair, PRESETS will be 100% responsible for everything.')
-                    .replace(/7-Day Easy Return & Exchange Policy/gi, '1-Day Return & Exchange Policy')
-                    .replace(/7-Day/gi, '1-Day')
-                    .replace(/7 days/gi, '1 day')
-                )}</p>
+                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">
+                  1. 1-Day Return & Exchange Policy on Unworn 1-of-1 Pairs (Severe Damage Guarantee)
+                </h3>
+                <p>
+                  ${escapeHtml(
+                    state.storeConfig.returnExchangePolicy ||
+                      '1-Day Return & Exchange Policy on unworn 1-of-1 pairs: Every sneaker at PRESETS is a 1-of-1 pre-loved authentic pair inspected across Soles, Body, Laces, and Inside. Customers will be delivered a detailed inspection video along with their order confirmation. A pair can only be returned or exchanged within 1 day (24 hours) of delivery if it arrives severely damaged or completely different from what was shown and described on the inspection page (PRESETS takes 100% responsibility). Strictly no returns or exchanges for size issues as exact insole measurements in inches are provided for every pair.'
+                  )}
+                </p>
               </div>
 
               <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-1.5">
-                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">2. Strictly No Returns or Exchanges for Size Issues</h3>
-                <p>We do <strong class="text-white">NOT</strong> accept returns or exchanges for sizing issues. Because pre-loved sneakers across different brands can vary slightly in EU tag sizing, we manually measure and display the <strong class="text-[#FF5500]">exact Insole Measurement in Inches</strong> for every single pair on our website.</p>
+                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">
+                  2. Strictly No Returns or Exchanges for Size Issues
+                </h3>
+                <p>
+                  We do <strong class="text-white">NOT</strong> accept returns or exchanges for sizing issues. Because pre-loved sneakers across different brands can vary slightly in EU tag sizing, we manually measure and display the <strong class="text-[#FF5500]">exact Insole Measurement in Inches</strong> for every single pair on our website. Please measure your own comfortable shoe insole in inches and match it before placing your order.
+                </p>
               </div>
 
               <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-1.5">
-                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">3. How to Return a Damaged Pair or Cancel an Order (Using Pair ID)</h3>
-                <p>Every sneaker has its own unique <strong class="text-white">Pair ID</strong> shown inside its <strong class="text-[#FF5500]">Inspection Page</strong> (and your Pair ID is also your Order Number):</p>
+                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">
+                  3. How to Return a Damaged Pair within 1 Day or Cancel an Order (Using Pair ID)
+                </h3>
+                <p>
+                  Every sneaker has its own unique <strong class="text-white">Pair ID</strong> shown inside its <strong class="text-[#FF5500]">Inspection Page</strong> (and your Pair ID is also your Order Number):
+                </p>
                 <ul class="list-disc pl-5 space-y-1 text-orange-100/85">
                   <li><strong>Step 1:</strong> Open the sneaker's Inspection Page and copy the <strong>Pair ID</strong> (e.g., <code class="text-[#FF5500] font-bold">#1</code>).</li>
                   <li><strong>Step 2:</strong> Click the <strong class="text-[#FF5500]">Return Pair</strong> or <strong class="text-[#FF5500]">Cancel Order</strong> button at the top of the website.</li>
@@ -3721,19 +3998,33 @@
               </div>
 
               <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-1.5">
-                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">4. Full Prepayment (5% OFF), Free Delivery Above Rs. 8,000 & COD Policy</h3>
-                <p>• <strong>FREE Home Delivery on Orders Above Rs. 8,000:</strong> Any order with a sneaker subtotal of <strong class="text-emerald-400">Rs. 8,000 or above automatically qualifies for FREE Home Delivery (Rs. 0)</strong>! Orders below Rs. 8,000 have a standard Rs. ${SHIPPING_FEE} nationwide delivery fee.</p>
-                <p>• <strong>Full Prepayment (5% Discount):</strong> Enjoy an instant 5% discount on your sneaker subtotal when paying 100% upfront.</p>
+                <h3 class="font-black text-[#FF5500] text-sm sm:text-base">
+                  4. Full Prepayment (5% OFF), Free Delivery Above Rs. 8,000 & COD Policy
+                </h3>
+                <p>
+                  • <strong>FREE Home Delivery on Orders Above Rs. 8,000:</strong> Any order with a sneaker subtotal of <strong class="text-emerald-400">Rs. 8,000 or above automatically qualifies for FREE Home Delivery (Rs. 0)</strong>! Orders below Rs. 8,000 have a standard Rs. ${SHIPPING_FEE} nationwide delivery fee.
+                </p>
+                <p>
+                  • <strong>Full Prepayment (5% Discount):</strong> Enjoy an instant 5% discount on your sneaker subtotal when paying 100% upfront.
+                </p>
                 <p>• <strong>Cash on Delivery (COD):</strong> ${escapeHtml(getEffectiveCodPolicyDescription())}</p>
               </div>
             </div>
 
             <div class="flex flex-wrap gap-3 pt-2">
-              <button type="button" onclick="state.returnModalOpen = true; renderApp();" class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-5 py-3 rounded-xl text-xs flex items-center gap-2">
+              <button
+                type="button"
+                onclick="state.returnModalOpen = true; renderApp();"
+                class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-5 py-3 rounded-xl text-xs flex items-center gap-2"
+              >
                 ${iconSvg('shield', 'w-4 h-4')}
-                <span>Submit Return Pair Request (With Pair ID)</span>
+                <span>Submit 1-Day Return Claim (With Pair ID)</span>
               </button>
-              <button type="button" onclick="state.cancelModalOpen = true; renderApp();" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 font-bold px-5 py-3 rounded-xl text-xs flex items-center gap-2">
+              <button
+                type="button"
+                onclick="state.cancelModalOpen = true; renderApp();"
+                class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 font-bold px-5 py-3 rounded-xl text-xs flex items-center gap-2"
+              >
                 ${iconSvg('xcircle', 'w-4 h-4 text-[#FF5500]')}
                 <span>Cancel an Order (With Pair ID)</span>
               </button>
@@ -3758,7 +4049,7 @@
                   </div>
                   <div>
                     <h2 class="text-base font-black text-white">Admin 2FA Verification</h2>
-                    <p class="text-[11px] text-orange-200/60">Protected by 2FA Security</p>
+                    <p class="text-[11px] text-orange-200/60">Protected by 2FA Security (Stays logged in until you logout)</p>
                   </div>
                 </div>
               </div>
@@ -3766,23 +4057,53 @@
               ${
                 state.otpStep === 'password'
                   ? `<form onsubmit="handleBossPasswordSubmit(event)" class="space-y-4">
-                      <p class="text-xs text-orange-200/80 leading-relaxed">Enter your Owner Security Password below to receive a 6-digit 2FA verification code.</p>
-                      <input type="password" required value="${escapeHtml(state.adminPasswordInput)}" oninput="state.adminPasswordInput = this.value" placeholder="Enter Owner Security Password" class="w-full bg-black border border-[#FF5500]/35 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF5500]" />
-                      <button type="submit" ${state.isSendingEmail ? 'disabled' : ''} class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] disabled:opacity-50 text-black font-black py-3 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]">
+                      <p class="text-xs text-orange-200/80 leading-relaxed">
+                        Enter your Owner Security Password below to receive a 6-digit 2FA verification code.
+                      </p>
+                      <input
+                        type="password"
+                        required
+                        value="${escapeHtml(state.adminPasswordInput)}"
+                        oninput="state.adminPasswordInput = this.value"
+                        placeholder="Enter Owner Security Password"
+                        class="w-full bg-black border border-[#FF5500]/35 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#FF5500]"
+                      />
+                      <button
+                        type="submit"
+                        ${state.isSendingEmail ? 'disabled' : ''}
+                        class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] disabled:opacity-50 text-black font-black py-3 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]"
+                      >
                         ${state.isSendingEmail ? 'Sending 2FA Code...' : 'Send 2FA Code'}
                       </button>
                     </form>`
                   : `<form onsubmit="handleBossOtpSubmit(event)" class="space-y-4">
                       <div>
-                        <label class="text-xs text-orange-200/80 font-bold block mb-2">Step 2: Enter 6-Digit Security Code</label>
-                        <input type="text" required maxlength="6" value="${escapeHtml(state.userEnteredOtp)}" oninput="state.userEnteredOtp = this.value" placeholder="Enter 6-digit code" class="w-full bg-black border border-[#FF5500]/45 rounded-xl px-4 py-3 text-center tracking-[0.35em] text-lg text-white font-mono focus:outline-none focus:border-[#FF5500]" />
+                        <label class="text-xs text-orange-200/80 font-bold block mb-2">
+                          Step 2: Enter 6-Digit Security Code
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          maxlength="6"
+                          value="${escapeHtml(state.userEnteredOtp)}"
+                          oninput="state.userEnteredOtp = this.value"
+                          placeholder="Enter 6-digit code"
+                          class="w-full bg-black border border-[#FF5500]/45 rounded-xl px-4 py-3 text-center tracking-[0.35em] text-lg text-white font-mono focus:outline-none focus:border-[#FF5500]"
+                        />
                       </div>
-                      <button type="submit" class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black py-3 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(16,185,129,0.35)]">
+                      <button
+                        type="submit"
+                        class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black py-3 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+                      >
                         Verify Code & Unlock Boss Mode
                       </button>
                       <div class="flex items-center justify-between pt-2 text-xs">
-                        <button type="button" onclick="sendBossMode2FAEmail()" class="text-[#FF5500] font-bold hover:underline">${state.isSendingEmail ? 'Resending...' : '↻ Resend 2FA Code'}</button>
-                        <button type="button" onclick="state.otpStep = 'password'; state.userEnteredOtp = ''; state.otpStatusMessage = ''; renderApp();" class="text-orange-200/60 hover:text-white underline">Back to Password</button>
+                        <button type="button" onclick="sendBossMode2FAEmail()" class="text-[#FF5500] font-bold hover:underline">
+                          ${state.isSendingEmail ? 'Resending...' : '↻ Resend 2FA Code'}
+                        </button>
+                        <button type="button" onclick="state.otpStep = 'password'; state.userEnteredOtp = ''; state.otpStatusMessage = ''; renderApp();" class="text-orange-200/60 hover:text-white underline">
+                          Back to Password
+                        </button>
                       </div>
                     </form>`
               }
@@ -3805,141 +4126,253 @@
         `;
       }
 
-      let tabContentHtml = '';
+      let tabBodyHtml = '';
 
-      if (state.bossTab === 'inventory') {
-        tabContentHtml = `
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            ${state.sneakers
-              .map((pair) => {
-                const code = getPairCode(pair);
-                const isSold = pair.status === 'sold';
-                const safeId = escapeHtml(pair.id);
-                return `
-                  <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-2xl p-4 flex flex-col justify-between space-y-3">
-                    <div class="flex items-center gap-3">
-                      <div class="w-16 h-16 rounded-xl bg-[#080301] overflow-hidden border border-[#FF5500]/30 shrink-0">
-                        <img src="${escapeHtml(pair.images?.[0] || pair.image_url || pair.image || '')}" alt="" style="transform: scale(${Number(pair.imageZoom) || 1});" class="w-full h-full ${pair.imageFit === 'contain' ? 'object-contain p-1' : 'object-cover'}" />
-                      </div>
-                      <div class="min-w-0 flex-1">
-                        <div class="flex items-center gap-1.5">
-                          <span class="bg-[#FF5500] text-black text-[10px] font-black px-2 py-0.5 rounded font-mono">Pair #${escapeHtml(code)}</span>
-                          <button type="button" onclick="togglePairSoldStatus('${safeId}')" class="text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer ${isSold ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}">
-                            ${isSold ? 'SOLD (Click to Toggle)' : 'AVAILABLE'}
-                          </button>
-                        </div>
-                        <h4 class="text-xs font-bold text-white truncate mt-1">${escapeHtml(pair.name || pair.title || '')}</h4>
-                        <div class="text-[11px] text-orange-200/75">
-                          EU ${escapeHtml(pair.sizeEU || pair.eu_size || pair.size)} • Insole ${escapeHtml(pair.insoleInches)}" • <strong class="text-[#FF5500]">${formatPKR(getEffectivePairPrice(pair))}</strong>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="flex items-center justify-between gap-2 pt-2 border-t border-[#FF5500]/20 text-xs">
-                      <button type="button" onclick="startEditPair('${safeId}')" class="flex-1 bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 font-bold py-1.5 rounded-lg">
-                        Edit Pair / Zoom / Free Delivery
-                      </button>
-                      ${
-                        state.deleteConfirmId === pair.id
-                          ? `<button type="button" onclick="deletePairPermanently('${safeId}')" class="bg-rose-600 text-white font-black px-3 py-1.5 rounded-lg">Confirm Delete</button>`
-                          : `<button type="button" onclick="state.deleteConfirmId = '${safeId}'; renderApp();" class="bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold px-3 py-1.5 rounded-lg">Delete</button>`
-                      }
-                    </div>
-                  </div>
-                `;
-              })
-              .join('')}
-          </div>
-        `;
-      } else if (state.bossTab === 'upload') {
-        tabContentHtml = `
+      if (state.bossTab === 'upload') {
+        ensurePairFormAdjustmentsArray();
+        const selIdx = Math.max(0, Math.min(4, Number(state.editingPhotoIdx) || 0));
+        const curAdj = getPhotoAdjustment(state.pairForm, selIdx);
+        const currentPreviewSrc = state.pairForm.images?.[selIdx] || state.pairForm.images?.[0] || '';
+        const previewStyleStr = getPhotoInlineStyle(state.pairForm, selIdx);
+        const previewFitClass = curAdj.fit === 'contain' ? 'object-contain p-2' : 'object-cover';
+
+        tabBodyHtml = `
           <form onsubmit="handleSaveSneaker(event)" class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-6 space-y-5">
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#FF5500]/20 pb-3">
-              <h3 class="text-base font-black text-white">${state.editingPairId ? `Editing Sneaker (Pair ID #${escapeHtml(state.pairForm.customPairId || '1')})` : 'Upload New 1-of-1 Sneaker'}</h3>
-              ${state.editingPairId ? `<button type="button" onclick="resetPairForm()" class="text-xs text-orange-200 underline">Cancel Edit</button>` : ''}
+              <h3 class="text-base font-black text-white">
+                ${state.editingPairId ? `Editing Sneaker (Pair ID #${escapeHtml(state.pairForm.customPairId || '1')})` : 'Upload New 1-of-1 Sneaker (Unlimited Pairs Supported)'}
+              </h3>
+              ${
+                state.editingPairId
+                  ? `<button type="button" onclick="resetPairForm()" class="text-xs text-orange-200 underline">Cancel Edit</button>`
+                  : ''
+              }
             </div>
 
+            <!-- 5-Photo Upload Bar -->
             <div class="bg-[#0A0401] border border-dashed border-[#FF5500]/45 rounded-xl p-4 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <span class="text-xs font-bold text-white block">Main Sneaker Photos (${state.pairForm.images.length}/5 Uploaded) *</span>
-                  <span class="text-[11px] text-orange-200/60">Upload up to 5 main angles from your laptop or phone</span>
+                  <span class="text-xs font-bold text-white block">
+                    Main Sneaker Photos (${state.pairForm.images.length}/5 Uploaded) *
+                  </span>
+                  <span class="text-[11px] text-orange-200/60">
+                    Upload up to 5 angles — click any uploaded photo below to adjust its Zoom, Position (X/Y), Fit & Rotation individually!
+                  </span>
                 </div>
-                <label class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-4 py-2 rounded-xl text-xs cursor-pointer">
-                  + Select Main Photos
-                  <input type="file" accept="image/*" multiple onchange="handleDevicePhotoUpload(this)" class="hidden" />
-                </label>
+                <div>
+                  <input
+                    id="boss-pair-photo-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onchange="handleDevicePhotoUpload(this)"
+                    class="hidden"
+                  />
+                  <button
+                    type="button"
+                    onclick="document.getElementById('boss-pair-photo-input')?.click()"
+                    class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-4 py-2 rounded-xl text-xs cursor-pointer shadow-[0_0_15px_rgba(255,85,0,0.35)]"
+                  >
+                    + Select Main Photos
+                  </button>
+                </div>
               </div>
+
               ${state.aiVisionStatus ? `<p class="text-[11px] text-[#FF5500] font-semibold">${escapeHtml(state.aiVisionStatus)}</p>` : ''}
+
               ${
                 state.pairForm.images.length > 0
-                  ? `<div class="grid grid-cols-5 gap-2.5 pt-1">
+                  ? `<div class="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
                       ${state.pairForm.images
-                        .map(
-                          (imgSrc, i) => `
-                            <div class="relative h-20 rounded-xl overflow-hidden border border-[#FF5500]/40 group">
-                              <img src="${escapeHtml(imgSrc)}" alt="" class="w-full h-full object-cover" />
-                              <button type="button" onclick="state.pairForm.images.splice(${i}, 1); renderApp();" class="absolute top-1 right-1 bg-black/80 text-rose-400 text-[10px] font-bold px-1.5 py-0.5 rounded">✕</button>
+                        .map((imgSrc, i) => {
+                          const thumbAdj = getPhotoAdjustment(state.pairForm, i);
+                          const thumbFit = thumbAdj.fit === 'contain' ? 'object-contain p-1' : 'object-cover';
+                          const thumbStyle = getPhotoInlineStyle(state.pairForm, i);
+                          const isSelected = selIdx === i;
+                          return `
+                            <div class="bg-[#120802] border-2 ${isSelected ? 'border-[#FF5500] shadow-[0_0_15px_rgba(255,85,0,0.45)]' : 'border-white/15'} rounded-xl p-1.5 space-y-1.5">
+                              <div
+                                onclick="state.editingPhotoIdx = ${i}; renderApp();"
+                                class="relative h-24 rounded-lg overflow-hidden bg-[#060200] cursor-pointer"
+                              >
+                                <img
+                                  id="boss-thumb-img-${i}"
+                                  src="${escapeHtml(imgSrc)}"
+                                  alt="Photo ${i + 1}"
+                                  style="${thumbStyle}"
+                                  class="w-full h-full ${thumbFit} transition"
+                                />
+                                <span class="absolute top-1 left-1 bg-black/85 text-[#FF5500] text-[9px] font-black px-1.5 py-0.5 rounded">
+                                  ${i === 0 ? '★ Cover #1' : `Photo #${i + 1}`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onclick="event.stopPropagation(); removeUploadedPhotoAt(${i})"
+                                  class="absolute top-1 right-1 bg-black/85 text-rose-400 text-[10px] font-bold px-1.5 py-0.5 rounded"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                              <div class="flex items-center justify-between gap-1 text-[9px]">
+                                <button type="button" onclick="moveUploadedPhoto(${i}, -1)" class="bg-[#0A0401] border border-[#FF5500]/30 text-orange-200 px-1.5 py-0.5 rounded">←</button>
+                                ${
+                                  i > 0
+                                    ? `<button type="button" onclick="setUploadedPhotoAsCover(${i})" class="bg-[#FF5500]/20 border border-[#FF5500]/40 text-[#FF5500] font-bold px-1.5 py-0.5 rounded">Set Cover</button>`
+                                    : `<span class="text-emerald-400 font-bold">Cover</span>`
+                                }
+                                <button type="button" onclick="rotateUploadedPhoto90(${i})" class="bg-[#0A0401] border border-[#FF5500]/30 text-orange-200 px-1.5 py-0.5 rounded" title="Rotate 90°">↻ 90°</button>
+                                <button type="button" onclick="moveUploadedPhoto(${i}, 1)" class="bg-[#0A0401] border border-[#FF5500]/30 text-orange-200 px-1.5 py-0.5 rounded">→</button>
+                              </div>
                             </div>
-                          `
-                        )
+                          `;
+                        })
                         .join('')}
                     </div>`
                   : ''
               }
             </div>
 
-            <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-3">
+            <!-- INDIVIDUAL PHOTO ADJUSTER FOR ALL 5 UPLOADED PHOTOS -->
+            <div class="bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-4 space-y-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <span class="text-xs font-black text-[#FF5500] uppercase tracking-wider">Standard Frame Photo Zoom In / Zoom Out Control</span>
-                <span class="text-[11px] text-orange-200/70">All sneaker cards stay in the standard 1:1 square size while you zoom the photo in or out</span>
+                <div>
+                  <span class="text-xs font-black text-[#FF5500] uppercase tracking-wider">
+                    Individual Photo Adjuster — Adjusting Photo #${selIdx + 1} ${selIdx === 0 ? '(Storefront Cover Photo)' : ''}
+                  </span>
+                  <p class="text-[11px] text-orange-200/70">
+                    Click any uploaded photo above to switch angles, or adjust Zoom, Left/Right X, Up/Down Y & Fit below.
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onclick="resetSelectedPhotoAdjustment()"
+                    class="bg-[#160B04] border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-3 py-1.5 rounded-lg"
+                  >
+                    Reset Photo #${selIdx + 1}
+                  </button>
+                  <button
+                    type="button"
+                    onclick="applyAdjustmentToAllUploadedPhotos()"
+                    class="bg-[#FF5500] text-black text-[11px] font-black px-3 py-1.5 rounded-lg"
+                  >
+                    Apply Settings to All Photos
+                  </button>
+                </div>
               </div>
-              <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+
+              <div class="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
                 <div class="md:col-span-8 space-y-3">
+                  <!-- Zoom Slider -->
                   <div>
                     <div class="flex items-center justify-between text-xs mb-1">
-                      <span class="text-orange-200/80 font-bold">Photo Zoom Level: ${Number(state.pairForm.imageZoom || 1).toFixed(2)}x</span>
+                      <span class="text-orange-200/80 font-bold">
+                        Zoom Level (Photo #${selIdx + 1}): <strong id="boss-adj-zoom-label" class="text-[#FF5500]">${Number(curAdj.zoom).toFixed(2)}x</strong>
+                      </span>
                       <div class="flex items-center gap-1.5">
-                        <button type="button" onclick="state.pairForm.imageZoom = Math.max(0.6, Number((Number(state.pairForm.imageZoom || 1) - 0.1).toFixed(2))); renderApp();" class="bg-[#160B04] border border-[#FF5500]/40 text-white px-2.5 py-1 rounded text-xs font-black">− Zoom Out</button>
-                        <button type="button" onclick="state.pairForm.imageZoom = 1; renderApp();" class="bg-[#160B04] border border-[#FF5500]/30 text-orange-200 px-2.5 py-1 rounded text-xs font-bold">Reset 1.0x</button>
-                        <button type="button" onclick="state.pairForm.imageZoom = Math.min(1.8, Number((Number(state.pairForm.imageZoom || 1) + 0.1).toFixed(2))); renderApp();" class="bg-[#FF5500] text-black px-2.5 py-1 rounded text-xs font-black">+ Zoom In</button>
+                        <button type="button" onclick="updateSelectedPhotoAdjustment('zoom', Math.max(0.5, Number((getPhotoAdjustment(state.pairForm, ${selIdx}).zoom - 0.1).toFixed(2))))" class="bg-[#160B04] border border-[#FF5500]/40 text-white px-2.5 py-0.5 rounded text-xs font-black">− Zoom Out</button>
+                        <button type="button" onclick="updateSelectedPhotoAdjustment('zoom', 1)" class="bg-[#160B04] border border-[#FF5500]/30 text-orange-200 px-2.5 py-0.5 rounded text-xs font-bold">1.0x</button>
+                        <button type="button" onclick="updateSelectedPhotoAdjustment('zoom', Math.min(2.2, Number((getPhotoAdjustment(state.pairForm, ${selIdx}).zoom + 0.1).toFixed(2))))" class="bg-[#FF5500] text-black px-2.5 py-0.5 rounded text-xs font-black">+ Zoom In</button>
                       </div>
                     </div>
-                    <input type="range" min="0.6" max="1.8" step="0.05" value="${state.pairForm.imageZoom || 1}" oninput="state.pairForm.imageZoom = parseFloat(this.value) || 1; renderApp();" class="w-full accent-[#FF5500] cursor-pointer" />
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.2"
+                      step="0.05"
+                      value="${curAdj.zoom}"
+                      oninput="updateSelectedPhotoAdjustment('zoom', parseFloat(this.value) || 1, true)"
+                      class="w-full accent-[#FF5500] cursor-pointer"
+                    />
                   </div>
+
+                  <!-- Horizontal X & Vertical Y Pan Sliders -->
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div class="flex justify-between text-xs mb-1">
+                        <span class="text-orange-200/80 font-bold">Move Left / Right (X):</span>
+                        <span id="boss-adj-x-label" class="font-black text-[#FF5500]">${curAdj.x}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="-50"
+                        max="50"
+                        step="1"
+                        value="${curAdj.x}"
+                        oninput="updateSelectedPhotoAdjustment('x', parseInt(this.value, 10) || 0, true)"
+                        class="w-full accent-[#FF5500] cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <div class="flex justify-between text-xs mb-1">
+                        <span class="text-orange-200/80 font-bold">Move Up / Down (Y):</span>
+                        <span id="boss-adj-y-label" class="font-black text-[#FF5500]">${curAdj.y}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="-50"
+                        max="50"
+                        step="1"
+                        value="${curAdj.y}"
+                        oninput="updateSelectedPhotoAdjustment('y', parseInt(this.value, 10) || 0, true)"
+                        class="w-full accent-[#FF5500] cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <!-- Cover vs Contain Fit -->
                   <div class="grid grid-cols-2 gap-2">
-                    <button type="button" onclick="state.pairForm.imageFit = 'cover'; renderApp();" class="py-2 px-3 rounded-lg text-[11px] font-bold border transition ${(state.pairForm.imageFit || 'cover') === 'cover' ? 'bg-[#FF5500] text-black border-[#FF5500] font-black' : 'bg-[#160B04] text-orange-200 border-[#FF5500]/25'}">Fill Standard Frame (Cover)</button>
-                    <button type="button" onclick="state.pairForm.imageFit = 'contain'; renderApp();" class="py-2 px-3 rounded-lg text-[11px] font-bold border transition ${state.pairForm.imageFit === 'contain' ? 'bg-[#FF5500] text-black border-[#FF5500] font-black' : 'bg-[#160B04] text-orange-200 border-[#FF5500]/25'}">Fit Full Shoe Inside Frame (Contain)</button>
+                    <button
+                      type="button"
+                      onclick="updateSelectedPhotoAdjustment('fit', 'cover')"
+                      class="py-2 px-3 rounded-lg text-[11px] font-bold border transition ${curAdj.fit === 'cover' ? 'bg-[#FF5500] text-black border-[#FF5500] font-black' : 'bg-[#160B04] text-orange-200 border-[#FF5500]/25'}"
+                    >
+                      Fill Standard Frame (Cover)
+                    </button>
+                    <button
+                      type="button"
+                      onclick="updateSelectedPhotoAdjustment('fit', 'contain')"
+                      class="py-2 px-3 rounded-lg text-[11px] font-bold border transition ${curAdj.fit === 'contain' ? 'bg-[#FF5500] text-black border-[#FF5500] font-black' : 'bg-[#160B04] text-orange-200 border-[#FF5500]/25'}"
+                    >
+                      Fit Full Shoe Inside Frame (Contain)
+                    </button>
                   </div>
                 </div>
+
+                <!-- Live 1:1 Frame Preview -->
                 <div class="md:col-span-4 flex flex-col items-center">
-                  <span class="text-[10px] text-orange-200/60 mb-1">Standard Store Card Preview</span>
-                  <div class="w-32 h-32 aspect-square rounded-xl bg-[#060200] border border-[#FF5500]/50 overflow-hidden flex items-center justify-center">
+                  <span class="text-[10px] text-orange-200/60 mb-1">
+                    Live Preview (Photo #${selIdx + 1})
+                  </span>
+                  <div class="w-36 h-36 aspect-square rounded-xl bg-[#060200] border-2 border-[#FF5500]/60 overflow-hidden flex items-center justify-center">
                     ${
-                      state.pairForm.images?.[0]
-                        ? `<img src="${escapeHtml(state.pairForm.images[0])}" alt="Zoom preview" style="transform: scale(${Number(state.pairForm.imageZoom) || 1});" class="w-full h-full ${state.pairForm.imageFit === 'contain' ? 'object-contain p-2' : 'object-cover'} transition" />`
-                        : `<span class="text-[10px] text-orange-200/40 text-center px-2">Upload photo to preview zoom</span>`
+                      currentPreviewSrc
+                        ? `<img id="boss-live-photo-preview-img" src="${escapeHtml(currentPreviewSrc)}" alt="Preview" style="${previewStyleStr}" class="w-full h-full ${previewFitClass} transition" />`
+                        : `<span class="text-[10px] text-orange-200/40 text-center px-2">Upload photo to preview</span>`
                     }
                   </div>
                 </div>
               </div>
             </div>
 
+            <!-- SNEAKER DETAILS INPUTS -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
               <div>
                 <label class="text-[11px] text-[#FF5500] font-black block mb-1">Custom Pair ID (Syncs Order #) *</label>
                 <input type="text" value="${escapeHtml(state.pairForm.customPairId)}" oninput="state.pairForm.customPairId = this.value" placeholder="e.g. 1, 2, 3..." class="w-full bg-[#0A0401] border border-[#FF5500] rounded-xl px-3.5 py-2 text-sm text-white font-mono" />
               </div>
               <div>
-                <label class="text-[11px] text-[#FF5500] font-black block mb-1">Brand Name *</label>
-                <select onchange="state.pairForm.brand = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/50 rounded-xl px-3.5 py-2 text-sm text-white font-bold">
-                  ${SHOE_BRANDS.filter((b) => b !== 'All')
-                    .map((b) => `<option value="${b}" ${(state.pairForm.brand || 'Nike') === b ? 'selected' : ''}>${b}</option>`)
-                    .join('')}
-                </select>
-              </div>
-              <div>
                 <label class="text-[11px] text-orange-200/70 block mb-1">Sneaker Name *</label>
                 <input type="text" required value="${escapeHtml(state.pairForm.name)}" oninput="state.pairForm.name = this.value" placeholder="Air Force 1 Low" class="w-full bg-[#0A0401] border border-[#FF5500]/30 rounded-xl px-3.5 py-2 text-sm text-white" />
+              </div>
+              <div>
+                <label class="text-[11px] text-orange-200/70 block mb-1">Brand Name</label>
+                <select onchange="state.pairForm.brand = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/30 rounded-xl px-3.5 py-2 text-sm text-white">
+                  ${SHOE_BRANDS.filter((b) => b !== 'All')
+                    .map((b) => `<option value="${b}" ${state.pairForm.brand === b ? 'selected' : ''}>${b}</option>`)
+                    .join('')}
+                </select>
               </div>
               <div>
                 <label class="text-[11px] text-orange-200/70 block mb-1">Category</label>
@@ -3981,6 +4414,7 @@
               </div>
             </div>
 
+            <!-- 4-Point Condition Sliders -->
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-[#0A0401] border border-[#FF5500]/25 rounded-xl p-4">
               ${[
                 { key: 'soles', label: 'Soles (/10)' },
@@ -3995,7 +4429,14 @@
                         <span class="text-orange-200/80">${c.label}</span>
                         <span class="font-black text-[#FF5500]">${state.pairForm[c.key]}/10</span>
                       </div>
-                      <input type="range" min="1" max="10" value="${state.pairForm[c.key]}" oninput="state.pairForm.${c.key} = Number(this.value); renderApp();" class="w-full accent-[#FF5500]" />
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value="${state.pairForm[c.key]}"
+                        oninput="state.pairForm.${c.key} = Number(this.value); renderApp();"
+                        class="w-full accent-[#FF5500]"
+                      />
                     </div>
                   `
                 )
@@ -4004,15 +4445,36 @@
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div class="flex items-center gap-2.5 bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3">
-                <input id="chk-prepaid-only" type="checkbox" ${state.pairForm.prepaidOnly ? 'checked' : ''} onchange="state.pairForm.prepaidOnly = this.checked; renderApp();" class="w-4 h-4 accent-[#FF5500]" />
-                <label for="chk-prepaid-only" class="text-xs font-bold text-white cursor-pointer">Prepaid Only Pair (Disable COD for this sneaker)</label>
+                <input
+                  id="chk-prepaid-only"
+                  type="checkbox"
+                  ${state.pairForm.prepaidOnly ? 'checked' : ''}
+                  onchange="state.pairForm.prepaidOnly = this.checked; renderApp();"
+                  class="w-4 h-4 accent-[#FF5500]"
+                />
+                <label for="chk-prepaid-only" class="text-xs font-bold text-white cursor-pointer">
+                  Prepaid Only Pair (Disable COD for this sneaker)
+                </label>
               </div>
+
               <div class="flex items-center justify-between gap-2.5 bg-[#0A0401] border border-emerald-500/45 rounded-xl p-3">
                 <div class="flex items-center gap-2.5">
-                  <input id="chk-free-delivery" type="checkbox" ${state.pairForm.freeDelivery ? 'checked' : ''} onchange="state.pairForm.freeDelivery = this.checked; renderApp();" class="w-4 h-4 accent-emerald-500" />
-                  <label for="chk-free-delivery" class="text-xs font-black text-emerald-400 cursor-pointer">✓ Free Home Delivery on This Pair (Rs. 0 Shipping)</label>
+                  <input
+                    id="chk-free-delivery"
+                    type="checkbox"
+                    ${state.pairForm.freeDelivery ? 'checked' : ''}
+                    onchange="state.pairForm.freeDelivery = this.checked; renderApp();"
+                    class="w-4 h-4 accent-emerald-500"
+                  />
+                  <label for="chk-free-delivery" class="text-xs font-black text-emerald-400 cursor-pointer">
+                    ✓ Free Home Delivery on This Pair (Rs. 0 Shipping)
+                  </label>
                 </div>
-                <button type="button" onclick="state.pairForm.freeDelivery = !state.pairForm.freeDelivery; renderApp();" class="px-2.5 py-1 rounded-lg text-[10px] font-black transition ${state.pairForm.freeDelivery ? 'bg-emerald-500 text-black' : 'bg-[#160B04] text-orange-200 border border-[#FF5500]/30'}">
+                <button
+                  type="button"
+                  onclick="state.pairForm.freeDelivery = !state.pairForm.freeDelivery; renderApp();"
+                  class="px-2.5 py-1 rounded-lg text-[10px] font-black transition ${state.pairForm.freeDelivery ? 'bg-emerald-500 text-black' : 'bg-[#160B04] text-orange-200 border border-[#FF5500]/30'}"
+                >
                   ${state.pairForm.freeDelivery ? 'FREE DELIVERY: ON' : 'OFF'}
                 </button>
               </div>
@@ -4020,23 +4482,179 @@
 
             <div>
               <label class="text-[11px] text-orange-200/70 block mb-1">Inspection Description & Notes</label>
-              <textarea rows="3" oninput="state.pairForm.description = this.value" placeholder="Describe condition, authenticity, and fit notes..." class="w-full bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3 text-xs text-white">${escapeHtml(state.pairForm.description)}</textarea>
+              <textarea
+                rows="3"
+                oninput="state.pairForm.description = this.value"
+                placeholder="Describe condition, authenticity, and fit notes..."
+                class="w-full bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3 text-xs text-white"
+              >${escapeHtml(state.pairForm.description)}</textarea>
             </div>
 
-            <button type="submit" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_25px_rgba(255,85,0,0.45)]">
+            <button
+              type="submit"
+              class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_25px_rgba(255,85,0,0.45)]"
+            >
               ${state.editingPairId ? 'Save Updated Sneaker' : 'Publish 1-of-1 Sneaker to Storefront'}
             </button>
           </form>
         `;
+      } else if (state.bossTab === 'inventory') {
+        const invCards = state.sneakers
+          .map((pair) => {
+            const code = escapeHtml(getPairCode(pair));
+            const isSold = pair.status === 'sold';
+            const safeId = escapeHtml(pair.id);
+            const coverAdj = getPhotoAdjustment(pair, 0);
+            const fitClass = coverAdj.fit === 'contain' ? 'object-contain p-1' : 'object-cover';
+            const inlineStyle = getPhotoInlineStyle(pair, 0);
+
+            return `
+              <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-2xl p-4 flex flex-col justify-between space-y-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-16 h-16 rounded-xl bg-[#080301] overflow-hidden border border-[#FF5500]/30 shrink-0">
+                    <img
+                      src="${escapeHtml(pair.images?.[0] || pair.image_url || pair.image || '')}"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      style="${inlineStyle}"
+                      class="w-full h-full ${fitClass}"
+                    />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5">
+                      <span class="bg-[#FF5500] text-black text-[10px] font-black px-2 py-0.5 rounded font-mono">
+                        Pair #${code}
+                      </span>
+                      <button
+                        type="button"
+                        onclick="togglePairSoldStatus('${safeId}')"
+                        class="text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer ${isSold ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}"
+                      >
+                        ${isSold ? 'SOLD (Click to Toggle)' : 'AVAILABLE'}
+                      </button>
+                    </div>
+                    <h4 class="text-xs font-bold text-white truncate mt-1">${escapeHtml(pair.name || pair.title || '')}</h4>
+                    <div class="text-[11px] text-orange-200/75">
+                      ${escapeHtml(pair.brand || 'Nike')} • EU ${escapeHtml(pair.sizeEU || pair.eu_size || pair.size)} • Insole ${escapeHtml(pair.insoleInches)}" • <strong class="text-[#FF5500]">${formatPKR(getEffectivePairPrice(pair))}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-2 pt-2 border-t border-[#FF5500]/20 text-xs">
+                  <button
+                    type="button"
+                    onclick="startEditPair('${safeId}')"
+                    class="flex-1 bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 font-bold py-1.5 rounded-lg"
+                  >
+                    Edit Pair / Adjust All 5 Photos
+                  </button>
+                  ${
+                    state.deleteConfirmId === pair.id
+                      ? `<button type="button" onclick="deletePairPermanently('${safeId}')" class="bg-rose-600 text-white font-black px-3 py-1.5 rounded-lg">Confirm Delete</button>`
+                      : `<button type="button" onclick="state.deleteConfirmId = '${safeId}'; renderApp();" class="bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold px-3 py-1.5 rounded-lg">Delete</button>`
+                  }
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+
+        tabBodyHtml = `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">${invCards}</div>`;
       } else if (state.bossTab === 'orders') {
         const prepaidOrders = state.orders.filter((o) => o.paymentMethod === 'PREPAID');
         const codOrders = state.orders.filter((o) => o.paymentMethod === 'COD');
         const claimOrders = state.orders.filter((o) => o.paymentMethod === 'RETURN_CLAIM' || o.paymentMethod === 'CANCEL_REQUEST');
 
-        tabContentHtml = `
+        const renderOrderCard = (order, idx, isPrepaidCard) => {
+          const fullBill = order.totals?.finalTotalWithShipping || 0;
+          const isPaid = order.prepaidPaidStatus === 'PAID';
+          const isAdvPaid = order.codAdvPaidStatus === 'ADV PAID';
+          const isConfirmed = Boolean(order.orderConfirmed);
+          const dispNum = escapeHtml(getOrderDisplayNumber(order, idx));
+          const safeOrdId = escapeHtml(order.id);
+          const remainingOnDel = isCodAdvancePolicyActive ? Math.max(0, fullBill - activeCodDepositAmount) : fullBill;
+
+          return `
+            <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-4 space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-black text-[#FF5500]">Order #${dispNum}</span>
+                  ${isConfirmed ? `<span class="bg-emerald-500 text-black text-[10px] font-black px-2 py-0.5 rounded">✓ CONFIRMED</span>` : ''}
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onclick="toggleOrderConfirmedStatus('${safeOrdId}')"
+                    class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isConfirmed ? 'bg-emerald-500 text-black' : 'bg-[#FF5500] text-black'}"
+                  >
+                    ${isConfirmed ? '✓ Order Confirmed' : 'Confirm Order'}
+                  </button>
+                  <button
+                    type="button"
+                    onclick="loadOrderIntoDeliverySlip('${safeOrdId}')"
+                    class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#160B04] text-orange-200 border border-[#FF5500]/40 hover:bg-[#FF5500]/20"
+                  >
+                    📦 Delivery Slip
+                  </button>
+                  ${
+                    isPrepaidCard
+                      ? `<button type="button" onclick="togglePrepaidOrderPaidStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isPaid ? 'bg-emerald-500 text-black' : 'bg-[#1A0D05] text-orange-200 border border-[#FF5500]/30'}">${isPaid ? 'PAID (100%)' : 'MARK PAID'}</button>`
+                      : isCodAdvancePolicyActive
+                      ? `<button type="button" onclick="toggleCodOrderAdvPaidStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isAdvPaid ? 'bg-emerald-500 text-black' : 'bg-[#1A0D05] text-orange-200 border border-[#FF5500]/30'}">${isAdvPaid ? `ADV PAID (Rs. ${activeCodDepositAmount})` : 'MARK ADV PAID'}</button>`
+                      : ''
+                  }
+                </div>
+              </div>
+
+              <div class="text-xs text-white font-bold">
+                ${escapeHtml(order.customer?.fullName || '')} (${escapeHtml(order.customer?.phone || '')}) — ${escapeHtml(order.customer?.city || '')}
+              </div>
+              <div class="text-[11px] text-orange-200/75">
+                Address: ${escapeHtml(order.customer?.address || '')}
+              </div>
+              <div class="text-xs text-[#FF5500] font-bold">
+                ${isPrepaidCard ? `Full Amount: ${formatPKR(fullBill)}` : `Total Bill: ${formatPKR(fullBill)} • COD Balance: ${formatPKR(remainingOnDel)}`}
+              </div>
+
+              <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-xl p-2.5 space-y-2">
+                <div class="text-[10px] font-black uppercase tracking-wider text-orange-200/80">
+                  3-Step WhatsApp Order Flow (Click in Order):
+                </div>
+                <div class="grid grid-cols-1 gap-1.5">
+                  <button
+                    type="button"
+                    onclick="sendBossOrderStep1AddressAndVideo('${safeOrdId}')"
+                    class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between"
+                  >
+                    <span>1️⃣ Step 1: Confirm Address + Send Detailed Video</span>
+                    <span class="text-[#FF5500] font-black">Send →</span>
+                  </button>
+                  <button
+                    type="button"
+                    onclick="sendBossOrderStep2PaymentDetails('${safeOrdId}')"
+                    class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between"
+                  >
+                    <span>${isPrepaidCard ? `2️⃣ Step 2: Send Full Prepaid (${formatPKR(fullBill)}) Bank Details` : isCodAdvancePolicyActive ? `2️⃣ Step 2: Send Rs. ${activeCodDepositAmount} COD Advance Details` : '2️⃣ Step 2: Send COD Bill Breakdown'}</span>
+                    <span>Send →</span>
+                  </button>
+                  <button
+                    type="button"
+                    onclick="sendBossOrderStep3PaymentReceivedAndDispatch('${safeOrdId}')"
+                    class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                  >
+                    <span>3️⃣ Step 3: Payment Received & Parcel Ready for Dispatch</span>
+                    <span>✓ Dispatch →</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+        };
+
+        tabBodyHtml = `
           <div class="space-y-6">
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <!-- Prepaid Orders -->
               <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-5 space-y-4">
                 <div class="flex items-center justify-between border-b border-[#FF5500]/25 pb-3">
                   <div>
@@ -4048,62 +4666,10 @@
                 ${
                   prepaidOrders.length === 0
                     ? `<p class="text-xs text-orange-200/50 py-6 text-center">No Prepaid orders yet.</p>`
-                    : `<div class="space-y-3.5">
-                        ${prepaidOrders
-                          .map((order, idx) => {
-                            const fullBill = order.totals?.finalTotalWithShipping || 0;
-                            const isPaid = order.prepaidPaidStatus === 'PAID';
-                            const isConfirmed = Boolean(order.orderConfirmed);
-                            const dispNum = getOrderDisplayNumber(order, idx);
-                            const safeOrdId = escapeHtml(order.id);
-                            return `
-                              <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-4 space-y-3">
-                                <div class="flex flex-wrap items-center justify-between gap-2">
-                                  <div class="flex items-center gap-1.5">
-                                    <span class="text-xs font-black text-[#FF5500]">Order #${escapeHtml(dispNum)}</span>
-                                    ${isConfirmed ? `<span class="bg-emerald-500 text-black text-[10px] font-black px-2 py-0.5 rounded">✓ CONFIRMED</span>` : ''}
-                                  </div>
-                                  <div class="flex flex-wrap items-center gap-1.5">
-                                    <button type="button" onclick="toggleOrderConfirmedStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isConfirmed ? 'bg-emerald-500 text-black' : 'bg-[#FF5500] text-black'}">
-                                      ${isConfirmed ? '✓ Order Confirmed' : 'Confirm Order'}
-                                    </button>
-                                    <button type="button" onclick="loadOrderIntoDeliverySlip('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#160B04] text-orange-200 border border-[#FF5500]/40 hover:bg-[#FF5500]/20">
-                                      📦 Delivery Slip
-                                    </button>
-                                    <button type="button" onclick="togglePrepaidOrderPaidStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isPaid ? 'bg-emerald-500 text-black' : 'bg-[#1A0D05] text-orange-200 border border-[#FF5500]/30'}">
-                                      ${isPaid ? 'PAID (100%)' : 'MARK PAID'}
-                                    </button>
-                                  </div>
-                                </div>
-                                <div class="text-xs text-white font-bold">${escapeHtml(order.customer?.fullName || '')} (${escapeHtml(order.customer?.phone || '')}) — ${escapeHtml(order.customer?.city || '')}</div>
-                                <div class="text-[11px] text-orange-200/75">Address: ${escapeHtml(order.customer?.address || '')}</div>
-                                <div class="text-xs text-[#FF5500] font-bold">Full Amount: ${formatPKR(fullBill)}</div>
-                                <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-xl p-2.5 space-y-2">
-                                  <div class="text-[10px] font-black uppercase tracking-wider text-orange-200/80">3-Step WhatsApp Order Flow (Click in Order):</div>
-                                  <div class="grid grid-cols-1 gap-1.5">
-                                    <button type="button" onclick="sendBossOrderStep1AddressAndVideo('${safeOrdId}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between">
-                                      <span>1️⃣ Step 1: Confirm Address + Send Detailed Video</span>
-                                      <span class="text-[#FF5500] font-black">Send →</span>
-                                    </button>
-                                    <button type="button" onclick="sendBossOrderStep2PaymentDetails('${safeOrdId}')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between">
-                                      <span>2️⃣ Step 2: Send Full Prepaid (${formatPKR(fullBill)}) Bank Details</span>
-                                      <span>Send →</span>
-                                    </button>
-                                    <button type="button" onclick="sendBossOrderStep3PaymentReceivedAndDispatch('${safeOrdId}')" class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between shadow-[0_0_15px_rgba(16,185,129,0.3)]">
-                                      <span>3️⃣ Step 3: Payment Received & Parcel Ready for Dispatch</span>
-                                      <span>✓ Dispatch →</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            `;
-                          })
-                          .join('')}
-                      </div>`
+                    : `<div class="space-y-3.5">${prepaidOrders.map((o, i) => renderOrderCard(o, i, true)).join('')}</div>`
                 }
               </div>
 
-              <!-- COD Orders -->
               <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-5 space-y-4">
                 <div class="flex items-center justify-between border-b border-[#FF5500]/25 pb-3">
                   <div>
@@ -4115,68 +4681,11 @@
                 ${
                   codOrders.length === 0
                     ? `<p class="text-xs text-orange-200/50 py-6 text-center">No COD orders yet.</p>`
-                    : `<div class="space-y-3.5">
-                        ${codOrders
-                          .map((order, idx) => {
-                            const fullBill = order.totals?.finalTotalWithShipping || 0;
-                            const isAdvPaid = order.codAdvPaidStatus === 'ADV PAID';
-                            const isConfirmed = Boolean(order.orderConfirmed);
-                            const dispNum = getOrderDisplayNumber(order, idx);
-                            const remainingOnDel = isCodAdvancePolicyActive ? Math.max(0, fullBill - activeCodDepositAmount) : fullBill;
-                            const safeOrdId = escapeHtml(order.id);
-                            return `
-                              <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-4 space-y-3">
-                                <div class="flex flex-wrap items-center justify-between gap-2">
-                                  <div class="flex items-center gap-1.5">
-                                    <span class="text-xs font-black text-[#FF5500]">Order #${escapeHtml(dispNum)}</span>
-                                    ${isConfirmed ? `<span class="bg-emerald-500 text-black text-[10px] font-black px-2 py-0.5 rounded">✓ CONFIRMED</span>` : ''}
-                                  </div>
-                                  <div class="flex flex-wrap items-center gap-1.5">
-                                    <button type="button" onclick="toggleOrderConfirmedStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isConfirmed ? 'bg-emerald-500 text-black' : 'bg-[#FF5500] text-black'}">
-                                      ${isConfirmed ? '✓ Order Confirmed' : 'Confirm Order'}
-                                    </button>
-                                    <button type="button" onclick="loadOrderIntoDeliverySlip('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-[#160B04] text-orange-200 border border-[#FF5500]/40 hover:bg-[#FF5500]/20">
-                                      📦 Delivery Slip
-                                    </button>
-                                    ${
-                                      isCodAdvancePolicyActive
-                                        ? `<button type="button" onclick="toggleCodOrderAdvPaidStatus('${safeOrdId}')" class="px-2.5 py-1 rounded-lg text-[11px] font-black transition ${isAdvPaid ? 'bg-emerald-500 text-black' : 'bg-[#1A0D05] text-orange-200 border border-[#FF5500]/30'}">
-                                            ${isAdvPaid ? `ADV PAID (Rs. ${activeCodDepositAmount})` : 'MARK ADV PAID'}
-                                          </button>`
-                                        : ''
-                                    }
-                                  </div>
-                                </div>
-                                <div class="text-xs text-white font-bold">${escapeHtml(order.customer?.fullName || '')} (${escapeHtml(order.customer?.phone || '')}) — ${escapeHtml(order.customer?.city || '')}</div>
-                                <div class="text-[11px] text-orange-200/75">Address: ${escapeHtml(order.customer?.address || '')}</div>
-                                <div class="text-xs text-[#FF5500] font-bold">Total Bill: ${formatPKR(fullBill)} • COD Balance: ${formatPKR(remainingOnDel)}</div>
-                                <div class="bg-[#160B04] border border-[#FF5500]/30 rounded-xl p-2.5 space-y-2">
-                                  <div class="text-[10px] font-black uppercase tracking-wider text-orange-200/80">3-Step WhatsApp Order Flow (Click in Order):</div>
-                                  <div class="grid grid-cols-1 gap-1.5">
-                                    <button type="button" onclick="sendBossOrderStep1AddressAndVideo('${safeOrdId}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between">
-                                      <span>1️⃣ Step 1: Confirm Address + Send Detailed Video</span>
-                                      <span class="text-[#FF5500] font-black">Send →</span>
-                                    </button>
-                                    <button type="button" onclick="sendBossOrderStep2PaymentDetails('${safeOrdId}')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between">
-                                      <span>${isCodAdvancePolicyActive ? `2️⃣ Step 2: Send Rs. ${activeCodDepositAmount} COD Advance Details` : '2️⃣ Step 2: Send COD Bill Breakdown'}</span>
-                                      <span>Send →</span>
-                                    </button>
-                                    <button type="button" onclick="sendBossOrderStep3PaymentReceivedAndDispatch('${safeOrdId}')" class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black px-3 py-2 rounded-lg text-[11px] text-left flex items-center justify-between shadow-[0_0_15px_rgba(16,185,129,0.3)]">
-                                      <span>3️⃣ Step 3: Payment Received & Parcel Ready for Dispatch</span>
-                                      <span>✓ Dispatch →</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            `;
-                          })
-                          .join('')}
-                      </div>`
+                    : `<div class="space-y-3.5">${codOrders.map((o, i) => renderOrderCard(o, i, false)).join('')}</div>`
                 }
               </div>
             </div>
 
-            <!-- Return & Cancel Claims -->
             <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-5 space-y-4">
               <div class="flex items-center justify-between border-b border-[#FF5500]/25 pb-3">
                 <div>
@@ -4210,22 +4719,80 @@
             </div>
           </div>
         `;
+      } else if (state.bossTab === 'reviews_mgr') {
+        tabBodyHtml = `
+          <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-6 space-y-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-3">
+              <div>
+                <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">STOREFRONT REVIEWS MODERATION</span>
+                <h3 class="text-base font-black text-white">Customer Reviews Manager (${state.reviews.length})</h3>
+              </div>
+              <button
+                type="button"
+                onclick="supabaseRest.fetchReviews().then(r => { state.reviews = r; persistAllLocal(); renderApp(); showToast('Synced latest reviews from Supabase!'); }).catch(() => showToast('Using local reviews.'));"
+                class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 text-xs font-bold px-3.5 py-2 rounded-xl"
+              >
+                ↻ Sync Reviews from Supabase
+              </button>
+            </div>
+
+            ${
+              state.reviews.length === 0
+                ? `<p class="text-xs text-orange-200/50 py-8 text-center">No customer reviews found.</p>`
+                : `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    ${state.reviews
+                      .map((rev) => {
+                        const safeRevId = escapeHtml(rev.id);
+                        return `
+                          <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-4 flex flex-col justify-between space-y-3 text-xs">
+                            <div class="space-y-2">
+                              <div class="flex items-center justify-between">
+                                <span class="font-black text-white">${escapeHtml(rev.name)} (${escapeHtml(rev.city || 'Pakistan')})</span>
+                                <span class="text-amber-400 font-bold">${'★'.repeat(Math.min(5, Math.max(1, Number(rev.rating) || 5)))}</span>
+                              </div>
+                              <div class="text-[11px] text-[#FF5500] font-semibold">${escapeHtml(rev.pairName || '1-of-1 Authentic Pair')} • ${escapeHtml(rev.date || '')}</div>
+                              <p class="text-orange-100/90 leading-relaxed">"${escapeHtml(rev.comment)}"</p>
+                              ${
+                                rev.imageUrl
+                                  ? `<img onclick="openReviewPhotoLightbox('${safeRevId}')" src="${escapeHtml(rev.imageUrl)}" alt="Review photo" class="w-full h-36 object-cover rounded-lg border border-[#FF5500]/35 cursor-zoom-in" />`
+                                  : ''
+                              }
+                            </div>
+                            <div class="pt-2 border-t border-[#FF5500]/20 flex justify-end">
+                              ${
+                                state.deleteReviewConfirmId === rev.id
+                                  ? `<div class="flex items-center gap-2">
+                                      <button type="button" onclick="deleteReviewPermanently('${safeRevId}')" class="bg-rose-600 text-white font-black px-3 py-1.5 rounded-lg">Confirm Permanent Delete</button>
+                                      <button type="button" onclick="state.deleteReviewConfirmId = null; renderApp();" class="text-orange-200/70 underline px-2">Cancel</button>
+                                    </div>`
+                                  : `<button type="button" onclick="state.deleteReviewConfirmId = '${safeRevId}'; renderApp();" class="bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-bold px-3.5 py-1.5 rounded-lg flex items-center gap-1.5">
+                                      ${iconSvg('trash', 'w-3.5 h-3.5')}
+                                      <span>🗑 Delete Review</span>
+                                    </button>`
+                              }
+                            </div>
+                          </div>
+                        `;
+                      })
+                      .join('')}
+                  </div>`
+            }
+          </div>
+        `;
       } else if (state.bossTab === 'delivery_slip') {
-        tabContentHtml = `
+        tabBodyHtml = `
           <div class="bg-[#160B04] border border-[#FF5500]/40 rounded-2xl p-5 sm:p-6 space-y-6">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-4">
               <div>
-                <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">BOSS MODE COURIER DISPATCH SYSTEM (SYNCED TO PRESETS_DELIVERY_SLIPS)</span>
-                <h2 class="text-lg font-black text-white">FROM / TO Delivery Slip Maker (PostEx)</h2>
+                <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">BOSS MODE COURIER DISPATCH SYSTEM (POSTEX ONLY)</span>
+                <h2 class="text-lg font-black text-white">FROM / TO PostEx Delivery Slip Maker</h2>
               </div>
               ${
                 state.orders.length > 0
-                  ? `<select onchange="if(this.value) loadOrderIntoDeliverySlip(this.value);" class="bg-[#0A0401] border border-[#FF5500]/40 rounded-xl px-3.5 py-2 text-xs text-white">
+                  ? `<select onchange="if(this.value) loadOrderIntoDeliverySlip(this.value)" class="bg-[#0A0401] border border-[#FF5500]/40 rounded-xl px-3.5 py-2 text-xs text-white">
                       <option value="">Quick Fill from Existing Order...</option>
                       ${state.orders
-                        .map(
-                          (o, i) => `<option value="${escapeHtml(o.id)}">Order #${escapeHtml(getOrderDisplayNumber(o, i))} — ${escapeHtml(o.customer?.fullName)} (${escapeHtml(o.customer?.city)})</option>`
-                        )
+                        .map((o, i) => `<option value="${escapeHtml(o.id)}">Order #${escapeHtml(getOrderDisplayNumber(o, i))} — ${escapeHtml(o.customer?.fullName || '')} (${escapeHtml(o.customer?.city || '')})</option>`)
                         .join('')}
                     </select>`
                   : ''
@@ -4264,10 +4831,10 @@
             <div class="flex flex-wrap gap-3">
               <button type="button" onclick="printOrDownloadDeliverySlip(null, 'download')" class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-6 py-3.5 rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 shadow-[0_0_25px_rgba(255,85,0,0.45)]">
                 ${iconSvg('download', 'w-4 h-4')}
-                <span>Save to Cloud & Download Slip (Order #${escapeHtml(state.deliverySlipForm.orderNumber)})</span>
+                <span>Save to Cloud & Download PostEx Slip</span>
               </button>
               <button type="button" onclick="printOrDownloadDeliverySlip(null, 'print')" class="bg-white hover:bg-orange-100 text-black font-black px-6 py-3.5 rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2">
-                <span>🖨️ Save & Print Slip Now</span>
+                <span>🖨️ Save & Print PostEx Slip Now</span>
               </button>
               <button type="button" onclick="saveCurrentSlipToSupabase(false)" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 font-bold px-5 py-3.5 rounded-xl text-xs transition">
                 Save Slip to Supabase Only
@@ -4276,30 +4843,29 @@
 
             <div class="border-t border-[#FF5500]/25 pt-5 space-y-3">
               <div class="flex items-center justify-between">
-                <h3 class="text-sm font-black text-white">Saved Delivery Slips History (${state.deliverySlips.length})</h3>
+                <h3 class="text-sm font-black text-white">Saved PostEx Delivery Slips History (${state.deliverySlips.length})</h3>
                 <span class="text-[11px] text-orange-200/70">Synced with presets_delivery_slips</span>
               </div>
               ${
                 state.deliverySlips.length === 0
-                  ? `<p class="text-xs text-orange-200/50">No saved delivery slips yet. Generate or save a slip above to store it in Supabase.</p>`
+                  ? `<p class="text-xs text-orange-200/50">No saved delivery slips yet.</p>`
                   : `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                       ${state.deliverySlips
-                        .map((slip, idx) => {
-                          const safeSlipId = escapeHtml(slip.slipId);
-                          return `
+                        .map(
+                          (slip, idx) => `
                             <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3.5 flex items-center justify-between gap-3 text-xs">
                               <div class="space-y-0.5">
                                 <div class="font-black text-[#FF5500]">Order #${escapeHtml(slip.orderNumber)} • ${escapeHtml(slip.customerName || 'Customer')} (${escapeHtml(slip.customerCity || 'PK')})</div>
                                 <div class="text-[11px] text-orange-200/80">${escapeHtml(slip.pairDetails)} • COD: ${formatPKR(slip.amountToCollect)}</div>
-                                <div class="text-[10px] text-orange-200/50">${escapeHtml(slip.courierName || 'PostEx')} ${slip.trackingNumber ? `• #${escapeHtml(slip.trackingNumber)}` : ''} • ${escapeHtml(slip.createdAt)}</div>
+                                <div class="text-[10px] text-orange-200/50">PostEx ${slip.trackingNumber ? `• #${escapeHtml(slip.trackingNumber)}` : ''} • ${escapeHtml(slip.createdAt)}</div>
                               </div>
                               <div class="flex items-center gap-1.5 shrink-0">
                                 <button type="button" onclick="loadSavedSlipByIndex(${idx})" class="bg-[#160B04] border border-[#FF5500]/35 text-orange-200 px-2.5 py-1.5 rounded-lg font-bold">Load</button>
-                                <button type="button" onclick="printOrDownloadDeliverySlip('${safeSlipId}', 'print')" class="bg-[#FF5500] text-black px-2.5 py-1.5 rounded-lg font-black">Re-Print</button>
+                                <button type="button" onclick="printOrDownloadDeliverySlip('${escapeHtml(slip.slipId)}', 'print')" class="bg-[#FF5500] text-black px-2.5 py-1.5 rounded-lg font-black">Re-Print</button>
                               </div>
                             </div>
-                          `;
-                        })
+                          `
+                        )
                         .join('')}
                     </div>`
               }
@@ -4307,18 +4873,19 @@
           </div>
         `;
       } else if (state.bossTab === 'policy') {
-        tabContentHtml = `
+        tabBodyHtml = `
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div class="bg-[#160B04] border border-[#FF5500]/40 rounded-2xl p-6 space-y-5">
               <div class="flex items-center justify-between border-b border-[#FF5500]/25 pb-3">
                 <div>
                   <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">CASH ON DELIVERY MASTER CONTROL (PRESETS_SETTINGS)</span>
-                  <h3 class="text-base font-black text-white">COD Advance Deposit & Return Policy</h3>
+                  <h3 class="text-base font-black text-white">COD Advance Deposit & 1-Day Return Policy</h3>
                 </div>
                 <button type="button" onclick="toggleCodPolicyMasterSwitch()" class="px-4 py-2 rounded-xl text-xs font-black transition ${isCodAdvancePolicyActive ? 'bg-emerald-500 text-black' : 'bg-rose-500 text-white'}">
                   ${isCodAdvancePolicyActive ? 'POLICY: ON' : 'POLICY: OFF'}
                 </button>
               </div>
+
               <div class="space-y-3">
                 <div>
                   <label class="text-xs text-orange-200/80 font-bold block mb-1">COD Advance Deposit Amount (PKR)</label>
@@ -4329,14 +4896,14 @@
                   <input type="text" value="${escapeHtml(state.storeConfig.frontBannerText)}" oninput="state.storeConfig.frontBannerText = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl px-3.5 py-2.5 text-xs text-white" />
                 </div>
                 <div>
-                  <label class="text-xs text-orange-200/80 font-bold block mb-1">COD Policy Text (Shown on Checkout & Policies)</label>
+                  <label class="text-xs text-orange-200/80 font-bold block mb-1">COD Policy Text</label>
                   <textarea rows="3" oninput="state.storeConfig.codPolicyText = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-3 text-xs text-white">${escapeHtml(state.storeConfig.codPolicyText)}</textarea>
                 </div>
                 <div>
-                  <label class="text-xs text-orange-200/80 font-bold block mb-1">Return & Exchange Policy Text</label>
+                  <label class="text-xs text-orange-200/80 font-bold block mb-1">1-Day Return & Exchange Policy Text</label>
                   <textarea rows="3" oninput="state.storeConfig.returnExchangePolicy = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl p-3 text-xs text-white">${escapeHtml(state.storeConfig.returnExchangePolicy || '')}</textarea>
                 </div>
-                <button type="button" onclick="syncSettingsToSupabase(state.storeConfig, 'Saved & synced COD, Marquee & Return Policy to presets_settings!')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3 rounded-xl text-xs transition">
+                <button type="button" onclick="syncSettingsToSupabase(state.storeConfig, 'Saved & synced COD, Marquee & 1-Day Return Policy to presets_settings!')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3 rounded-xl text-xs transition">
                   Save & Sync COD Policy Settings
                 </button>
               </div>
@@ -4348,10 +4915,15 @@
                   <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">STOREFRONT HERO SALE BANNER</span>
                   <h3 class="text-base font-black text-white">Sale Banner Editor & Photo Upload</h3>
                 </div>
-                <button type="button" onclick="state.storeConfig.saleBannerEnabled = !state.storeConfig.saleBannerEnabled; syncSettingsToSupabase(state.storeConfig, state.storeConfig.saleBannerEnabled ? 'Sale Banner Enabled & Synced!' : 'Sale Banner Hidden & Synced!');" class="px-4 py-2 rounded-xl text-xs font-black transition ${state.storeConfig.saleBannerEnabled ? 'bg-emerald-500 text-black' : 'bg-zinc-700 text-zinc-200'}">
+                <button
+                  type="button"
+                  onclick="state.storeConfig.saleBannerEnabled = !state.storeConfig.saleBannerEnabled; syncSettingsToSupabase(state.storeConfig, state.storeConfig.saleBannerEnabled ? 'Sale Banner Enabled & Synced!' : 'Sale Banner Hidden & Synced!');"
+                  class="px-4 py-2 rounded-xl text-xs font-black transition ${state.storeConfig.saleBannerEnabled ? 'bg-emerald-500 text-black' : 'bg-zinc-700 text-zinc-200'}"
+                >
                   ${state.storeConfig.saleBannerEnabled ? 'BANNER: ON' : 'BANNER: OFF'}
                 </button>
               </div>
+
               <div class="space-y-3">
                 <div class="bg-[#0A0401] border border-dashed border-[#FF5500]/45 rounded-xl p-3.5 flex items-center justify-between gap-3">
                   <div class="flex items-center gap-3">
@@ -4362,10 +4934,11 @@
                     </div>
                   </div>
                   <label class="bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black px-3.5 py-2 rounded-lg text-xs cursor-pointer shrink-0">
-                    + Upload Photo from Laptop
+                    + Upload Photo
                     <input type="file" accept="image/*" onchange="handleBannerPhotoUpload(this)" class="hidden" />
                   </label>
                 </div>
+
                 <div>
                   <label class="text-xs text-orange-200/80 font-bold block mb-1">Sale Badge Text</label>
                   <input type="text" value="${escapeHtml(state.storeConfig.saleBannerBadge)}" oninput="state.storeConfig.saleBannerBadge = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl px-3.5 py-2 text-xs text-white" />
@@ -4388,41 +4961,36 @@
                       <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500] block">FRONT HEADER LIVE SALE TIMER</span>
                       <h4 class="text-sm font-black text-white">Custom Sale Countdown Clock</h4>
                     </div>
-                    <button type="button" onclick="state.storeConfig.countdownEnabled = !state.storeConfig.countdownEnabled; syncSettingsToSupabase(state.storeConfig, state.storeConfig.countdownEnabled ? 'Sale Countdown Timer Enabled & Synced!' : 'Sale Countdown Timer Hidden & Synced!');" class="px-3.5 py-1.5 rounded-xl text-xs font-black transition ${state.storeConfig.countdownEnabled ? 'bg-emerald-500 text-black' : 'bg-zinc-700 text-zinc-200'}">
+                    <button
+                      type="button"
+                      onclick="state.storeConfig.countdownEnabled = !state.storeConfig.countdownEnabled; syncSettingsToSupabase(state.storeConfig, state.storeConfig.countdownEnabled ? 'Sale Countdown Timer Enabled!' : 'Sale Countdown Timer Hidden!');"
+                      class="px-3.5 py-1.5 rounded-xl text-xs font-black transition ${state.storeConfig.countdownEnabled ? 'bg-emerald-500 text-black' : 'bg-zinc-700 text-zinc-200'}"
+                    >
                       ${state.storeConfig.countdownEnabled ? 'TIMER: ON' : 'TIMER: OFF'}
                     </button>
                   </div>
+
                   <div>
                     <label class="text-xs text-orange-200/80 font-bold block mb-1">Countdown Headline Text</label>
-                    <input type="text" value="${escapeHtml(state.storeConfig.countdownTitle || '')}" oninput="state.storeConfig.countdownTitle = this.value" placeholder="⚡ FLASH VAULT SALE ENDS IN:" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl px-3.5 py-2 text-xs text-white" />
+                    <input type="text" value="${escapeHtml(state.storeConfig.countdownTitle || '')}" oninput="state.storeConfig.countdownTitle = this.value" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl px-3.5 py-2 text-xs text-white" />
                   </div>
                   <div>
                     <label class="text-xs text-orange-200/80 font-bold block mb-1">Sale End Date & Time</label>
                     <input type="datetime-local" value="${escapeHtml(state.storeConfig.countdownEndTime || '')}" onchange="state.storeConfig.countdownEndTime = this.value; syncSettingsToSupabase(state.storeConfig, 'Timer end time synced to presets_settings!');" class="w-full bg-[#0A0401] border border-[#FF5500]/35 rounded-xl px-3.5 py-2 text-xs text-white" />
                   </div>
                   <div class="flex flex-wrap gap-1.5 pt-1">
-                    ${[
-                      { label: '+12 Hours', hrs: 12 },
-                      { label: '+24 Hours (1 Day)', hrs: 24 },
-                      { label: '+48 Hours (2 Days)', hrs: 48 },
-                      { label: '+7 Days', hrs: 168 }
-                    ]
-                      .map(
-                        (preset) => `
-                          <button type="button" onclick="applyTimerQuickHours(${preset.hrs}, '${preset.label}')" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">
-                            ${preset.label}
-                          </button>
-                        `
-                      )
-                      .join('')}
+                    <button type="button" onclick="applyTimerQuickHours(12, '+12 Hours')" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">+12 Hours</button>
+                    <button type="button" onclick="applyTimerQuickHours(24, '+24 Hours (1 Day)')" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">+24 Hours (1 Day)</button>
+                    <button type="button" onclick="applyTimerQuickHours(48, '+48 Hours (2 Days)')" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">+48 Hours (2 Days)</button>
+                    <button type="button" onclick="applyTimerQuickHours(168, '+7 Days')" class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/35 text-orange-200 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">+7 Days</button>
                   </div>
                 </div>
               </div>
             </div>
           </div>
         `;
-      } else if (state.bossTab === 'excel_ai') {
-        tabContentHtml = `
+      } else {
+        tabBodyHtml = `
           <div class="bg-[#160B04] border border-[#FF5500]/35 rounded-2xl p-6 space-y-4">
             <h3 class="text-base font-black text-white">Excel CSV Inventory & Orders Export Hub</h3>
             <div class="flex flex-wrap gap-3">
@@ -4437,128 +5005,55 @@
             </div>
           </div>
         `;
-      } else if (state.bossTab === 'reviews_manager') {
-        tabContentHtml = `
-          <div class="bg-[#160B04] border border-[#FF5500]/40 rounded-2xl p-5 sm:p-6 space-y-5">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-4">
-              <div>
-                <span class="text-[10px] font-black uppercase tracking-widest text-[#FF5500]">BOSS MODE COMMUNITY MODERATION (SYNCED TO SUPABASE REVIEWS)</span>
-                <h2 class="text-lg font-black text-white">Customer Reviews Manager (${state.reviews.length})</h2>
-              </div>
-              <button
-                type="button"
-                onclick="supabaseRest.fetchReviews().then(r => { state.reviews = r; persistAllLocal(); renderApp(); showToast('Synced latest reviews from Supabase!'); }).catch(() => showToast('Could not fetch remote reviews.'));"
-                class="bg-[#0A0401] hover:bg-[#FF5500]/20 border border-[#FF5500]/40 text-orange-200 text-xs font-bold px-4 py-2 rounded-xl transition"
-              >
-                ↻ Sync Reviews from Cloud
-              </button>
-            </div>
-
-            ${
-              state.reviews.length === 0
-                ? `<p class="text-xs text-orange-200/50 py-8 text-center">No customer reviews in the database.</p>`
-                : `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    ${state.reviews
-                      .map((rev) => {
-                        const safeRevId = escapeHtml(rev.id);
-                        const stars = '★'.repeat(Math.min(5, Math.max(1, Number(rev.rating) || 5)));
-                        return `
-                          <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-2xl p-4 flex flex-col justify-between space-y-3">
-                            <div class="space-y-2.5">
-                              <div class="flex items-center justify-between gap-2">
-                                <span class="bg-[#FF5500]/15 border border-[#FF5500]/40 text-[#FF5500] text-[10px] font-black px-2.5 py-0.5 rounded-full">
-                                  ${escapeHtml(rev.city || 'Pakistan')}
-                                </span>
-                                <span class="text-amber-400 text-xs tracking-widest">${stars}</span>
-                              </div>
-                              <div>
-                                <div class="text-xs font-black text-white">${escapeHtml(rev.name || 'Customer')}</div>
-                                <div class="text-[11px] text-[#FF5500] font-semibold">${escapeHtml(rev.pairName || '1-of-1 Authentic Pair')} • <span class="text-orange-200/50">${escapeHtml(rev.date || '')}</span></div>
-                              </div>
-                              <p class="text-xs text-orange-100/90 leading-relaxed bg-[#160B04] border border-[#FF5500]/20 rounded-xl p-3">
-                                "${escapeHtml(rev.comment || '')}"
-                              </p>
-                              ${
-                                rev.imageUrl
-                                  ? `<div onclick="openReviewPhotoLightbox('${safeRevId}')" class="relative group cursor-zoom-in rounded-xl overflow-hidden border border-[#FF5500]/35 bg-black">
-                                      <img src="${escapeHtml(rev.imageUrl)}" alt="Review photo" class="w-full h-36 object-cover transition duration-300 group-hover:scale-105" />
-                                      <div class="absolute bottom-2 right-2 bg-black/80 text-[#FF5500] text-[10px] font-black px-2.5 py-1 rounded-lg border border-[#FF5500]/40">
-                                        🔍 View Full Frame
-                                      </div>
-                                    </div>`
-                                  : ''
-                              }
-                            </div>
-
-                            <div class="pt-2 border-t border-[#FF5500]/20 flex items-center justify-between gap-2">
-                              <span class="text-[10px] text-orange-200/40 font-mono truncate">ID: ${safeRevId}</span>
-                              ${
-                                state.deleteReviewConfirmId === rev.id
-                                  ? `<div class="flex items-center gap-1.5">
-                                      <button type="button" onclick="deleteReviewPermanently('${safeRevId}')" class="bg-rose-600 hover:bg-rose-500 text-white font-black text-xs px-3 py-1.5 rounded-lg shadow-[0_0_15px_rgba(225,29,72,0.5)]">
-                                        Confirm Delete
-                                      </button>
-                                      <button type="button" onclick="state.deleteReviewConfirmId = null; renderApp();" class="bg-[#160B04] text-orange-200 text-xs px-2.5 py-1.5 rounded-lg border border-[#FF5500]/30">
-                                        Cancel
-                                      </button>
-                                    </div>`
-                                  : `<button type="button" onclick="state.deleteReviewConfirmId = '${safeRevId}'; renderApp();" class="w-full bg-rose-500/15 hover:bg-rose-600 hover:text-white text-rose-300 border border-rose-500/40 font-black text-xs py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5">
-                                      ${iconSvg('trash', 'w-3.5 h-3.5')}
-                                      <span>🗑 Delete Review</span>
-                                    </button>`
-                              }
-                            </div>
-                          </div>
-                        `;
-                      })
-                      .join('')}
-                  </div>`
-            }
-          </div>
-        `;
       }
 
       return `
-        <main class="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-10">
-          <div class="space-y-6">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-4">
-              <div class="flex flex-wrap items-center gap-3">
-                <h1 class="text-xl font-bold text-white">Boss Mode (${state.sneakers.length} Pairs)</h1>
-                <button type="button" onclick="syncFromSupabase(false)" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-[#160B04] border border-[#FF5500]/40 text-orange-200 hover:text-white transition">
-                  <span class="w-2 h-2 rounded-full ${state.supabaseSyncStatus.includes('Connected') ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-                  <span>${escapeHtml(state.supabaseSyncStatus)} (↻ Sync)</span>
-                </button>
-                <button type="button" onclick="pushAllLocalToSupabase()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-[#FF5500]/15 border border-[#FF5500]/40 text-[#FF5500] hover:bg-[#FF5500]/25 transition">
-                  ↑ Push Local Data to Cloud
-                </button>
-                <button type="button" onclick="toggleCodPolicyMasterSwitch()" class="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition ${isCodAdvancePolicyActive ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40'}">
-                  ${iconSvg('power', 'w-3.5 h-3.5')}
-                  <span>${isCodAdvancePolicyActive ? `COD Rs. ${activeCodDepositAmount} Policy: ON` : 'COD Advance Policy: OFF'}</span>
-                </button>
-              </div>
-
-              <div class="flex flex-wrap gap-2">
-                ${[
-                  { id: 'inventory', label: `Inventory (${state.sneakers.length})` },
-                  { id: 'upload', label: state.editingPairId ? 'Edit Pair' : '+ Upload Pair' },
-                  { id: 'orders', label: `Orders (${state.orders.length})` },
-                  { id: 'delivery_slip', label: '📦 Delivery Slip Maker' },
-                  { id: 'reviews_manager', label: `★ Reviews Manager (${state.reviews.length})` },
-                  { id: 'policy', label: 'COD Policy & Banner' },
-                  { id: 'excel_ai', label: 'Excel CSV Hub' }
-                ]
-                  .map(
-                    (t) => `
-                      <button type="button" onclick="state.bossTab = '${t.id}'; renderApp();" class="px-3.5 py-2 rounded-xl text-xs font-bold transition ${state.bossTab === t.id ? 'bg-[#FF5500] text-black font-black shadow-[0_0_15px_rgba(255,85,0,0.4)]' : 'bg-[#160B04] text-orange-200 border border-[#FF5500]/30 hover:text-white'}">
-                        ${t.label}
-                      </button>
-                    `
-                  )
-                  .join('')}
-              </div>
+        <main class="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-10 space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#FF5500]/25 pb-4">
+            <div class="flex flex-wrap items-center gap-2.5">
+              <h1 class="text-xl font-bold text-white">Boss Mode (${state.sneakers.length} Pairs)</h1>
+              <button type="button" onclick="syncFromSupabase(false)" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-[#160B04] border border-[#FF5500]/40 text-orange-200 hover:text-white transition">
+                <span class="w-2 h-2 rounded-full ${state.supabaseSyncStatus.includes('Connected') ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+                <span>${escapeHtml(state.supabaseSyncStatus)} (↻ Sync)</span>
+              </button>
+              <button type="button" onclick="pushAllLocalToSupabase()" class="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-[#FF5500]/15 border border-[#FF5500]/40 text-[#FF5500] hover:bg-[#FF5500]/25 transition">
+                ↑ Push Local Data to Cloud
+              </button>
+              <button type="button" onclick="toggleCodPolicyMasterSwitch()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${isCodAdvancePolicyActive ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40'}">
+                ${iconSvg('power', 'w-3.5 h-3.5')}
+                <span>${isCodAdvancePolicyActive ? `COD Rs. ${activeCodDepositAmount} Policy: ON` : 'COD Advance Policy: OFF'}</span>
+              </button>
+              <button type="button" onclick="logoutBossMode()" class="px-3 py-1.5 rounded-xl text-[11px] font-black bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 transition">
+                Logout Boss Mode
+              </button>
             </div>
-            ${tabContentHtml}
+
+            <div class="flex flex-wrap gap-1.5">
+              ${[
+                { id: 'inventory', label: `Inventory (${state.sneakers.length})` },
+                { id: 'upload', label: state.editingPairId ? 'Edit Pair' : '+ Upload Pair' },
+                { id: 'orders', label: `Orders (${state.orders.length})` },
+                { id: 'reviews_mgr', label: `★ Reviews Manager (${state.reviews.length})` },
+                { id: 'delivery_slip', label: '📦 PostEx Slip Maker' },
+                { id: 'policy', label: 'COD Policy & Banner' },
+                { id: 'excel_ai', label: 'Excel CSV Hub' }
+              ]
+                .map(
+                  (t) => `
+                    <button
+                      type="button"
+                      onclick="state.bossTab = '${t.id}'; renderApp();"
+                      class="px-3.5 py-2 rounded-xl text-xs font-bold transition ${state.bossTab === t.id ? 'bg-[#FF5500] text-black font-black shadow-[0_0_15px_rgba(255,85,0,0.4)]' : 'bg-[#160B04] text-orange-200 border border-[#FF5500]/30 hover:text-white'}"
+                    >
+                      ${t.label}
+                    </button>
+                  `
+                )
+                .join('')}
+            </div>
           </div>
+
+          ${tabBodyHtml}
         </main>
       `;
     }
@@ -4566,6 +5061,8 @@
     function renderFooterAndModals() {
       const totals = getOrderTotals();
       const cartItems = totals.cartItems;
+      const isCodAdvancePolicyActive = totals.isCodAdvancePolicyActive;
+      const activeCodDepositAmount = totals.activeCodDepositAmount;
 
       const drawerHtml = state.isCartOpen
         ? `<div class="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm">
@@ -4610,22 +5107,8 @@
                       <div class="flex justify-between text-[11px] text-orange-200/75">
                         <span>Home Delivery</span>
                         <span class="${totals.qualifiesForFreeDelivery ? 'text-emerald-400 font-black' : ''}">
-                          ${totals.qualifiesForFreeDelivery ? 'FREE (Order ≥ Rs. 8,000)' : formatPKR(SHIPPING_FEE)}
+                          ${totals.qualifiesForFreeDelivery ? 'FREE (Rs. 0)' : formatPKR(SHIPPING_FEE)}
                         </span>
-                      </div>
-                      <div class="bg-[#090401] border border-[#FF5500]/25 rounded-xl p-2.5 text-[11px] text-orange-200/85 space-y-1">
-                        <div class="flex justify-between">
-                          <span>Full Prepaid (WhatsApp):</span>
-                          <span class="text-[#FF5500] font-black">5% OFF</span>
-                        </div>
-                        ${
-                          !totals.cartRequiresPrepaidOnly
-                            ? `<div class="flex justify-between">
-                                <span>COD Policy:</span>
-                                <span class="font-bold text-white">${totals.isCodAdvancePolicyActive ? `Rs. ${totals.activeCodDepositAmount} Advance` : 'Rs. 0 Advance'}</span>
-                              </div>`
-                            : ''
-                        }
                       </div>
                       <button onclick="state.isCartOpen = false; setView('checkout');" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3 rounded-xl text-xs shadow-[0_0_20px_rgba(255,85,0,0.4)]">
                         Proceed to Checkout
@@ -4658,7 +5141,6 @@
                 <span class="text-sm font-bold text-white">Order Cancellation (Using Pair ID)</span>
                 <button type="button" onclick="state.cancelModalOpen = false; renderApp();">${iconSvg('x', 'w-4 h-4 text-orange-200/70')}</button>
               </div>
-              <p class="text-[11px] text-orange-200/75 leading-relaxed">Take the <strong class="text-[#FF5500]">Pair ID</strong> from the Inspection Page of the sneaker you ordered and enter it below to cancel your order.</p>
               <input type="text" required value="${escapeHtml(state.cancelForm.name)}" oninput="state.cancelForm.name = this.value" placeholder="Your Name *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl px-3 py-2 text-xs text-white" />
               <input type="tel" required value="${escapeHtml(state.cancelForm.phone)}" oninput="state.cancelForm.phone = this.value" placeholder="Phone *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl px-3 py-2 text-xs text-white" />
               <input type="text" required value="${escapeHtml(state.cancelForm.orderId)}" oninput="state.cancelForm.orderId = this.value" placeholder="Enter Pair ID (e.g. 1) *" class="w-full bg-black border border-[#FF5500] rounded-xl px-3 py-2 text-xs text-white font-mono" />
@@ -4675,16 +5157,14 @@
                 <span class="text-sm font-black text-white">1-Day Return / Exchange Damaged Pair</span>
                 <button type="button" onclick="state.returnModalOpen = false; renderApp();">${iconSvg('x', 'w-4 h-4 text-orange-200/70')}</button>
               </div>
-              <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3 text-[11px] text-orange-100/85 space-y-1 leading-relaxed">
-                <p>• <strong class="text-[#FF5500]">1-Day Policy (Unworn 1-of-1 Pairs):</strong> Claims must be submitted within <strong>1 Day (24 Hours)</strong> of delivery.</p>
-                <p>• <strong class="text-[#FF5500]">Eligible Claims:</strong> Only if the pair arrived severely damaged or not as described (PRESETS takes 100% responsibility).</p>
-                <p>• <strong class="text-rose-400">No Sizing Returns:</strong> Returns are not accepted for size issues as exact insole inches are provided for every sneaker.</p>
-                <p>• <strong class="text-white">How to Submit:</strong> Copy the <strong class="text-[#FF5500]">Pair ID</strong> of the pair you ordered from its Inspection Page and send it below.</p>
+              <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-xl p-3 text-[11px] text-orange-100/85 space-y-1">
+                <p>• <strong class="text-[#FF5500]">1-Day Policy:</strong> Report within 1 day (24 hours) of delivery if severely damaged or not as described.</p>
+                <p>• <strong class="text-rose-400">No Sizing Returns:</strong> Exact insole inches are provided for every sneaker.</p>
               </div>
               <input type="text" required value="${escapeHtml(state.returnForm.name)}" oninput="state.returnForm.name = this.value" placeholder="Your Full Name *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl px-3 py-2 text-xs text-white" />
               <input type="tel" required value="${escapeHtml(state.returnForm.phone)}" oninput="state.returnForm.phone = this.value" placeholder="Your WhatsApp Phone *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl px-3 py-2 text-xs text-white" />
               <input type="text" required value="${escapeHtml(state.returnForm.pairId)}" oninput="state.returnForm.pairId = this.value" placeholder="Pair ID of Ordered Sneaker (e.g. 1) *" class="w-full bg-black border border-[#FF5500] rounded-xl px-3 py-2 text-xs text-white font-mono" />
-              <textarea rows="3" required oninput="state.returnForm.damageDetails = this.value" placeholder="Describe the severe damage / how it differs from description *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl p-3 text-xs text-white">${escapeHtml(state.returnForm.damageDetails)}</textarea>
+              <textarea rows="3" required oninput="state.returnForm.damageDetails = this.value" placeholder="Describe the severe damage *" class="w-full bg-black border border-[#FF5500]/30 rounded-xl p-3 text-xs text-white">${escapeHtml(state.returnForm.damageDetails)}</textarea>
               <button type="submit" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-2.5 rounded-xl text-xs">Send Return Request with Pair ID on WhatsApp</button>
             </form>
           </div>`
@@ -4693,71 +5173,36 @@
       const codModalHtml = state.codSuccessModal
         ? `<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
             <div class="max-w-md w-full bg-[#160B04] border border-[#FF5500]/50 rounded-2xl p-6 text-center space-y-4 shadow-[0_0_40px_rgba(255,85,0,0.25)]">
-              <div class="mx-auto w-9 h-9 text-[#FF5500] flex items-center justify-center">${iconSvg('check', 'w-9 h-9')}</div>
+              <div class="text-[#FF5500] flex justify-center">${iconSvg('check', 'w-9 h-9')}</div>
               <h3 class="text-lg font-black text-white">COD Order Placed (#${escapeHtml(getOrderDisplayNumber(state.codSuccessModal))})</h3>
               <p class="text-xs text-orange-100/85 leading-relaxed">
                 ${
-                  totals.isCodAdvancePolicyActive
-                    ? `Your COD order is logged! As per our active COD policy, please deposit Rs. ${totals.activeCodDepositAmount} advance into JS Bank (Ali Ammar - 03328559003 | IBAN: ${BANK_IBAN}). Remaining balance on delivery: ${formatPKR(state.codSuccessModal.totals?.payableOnDelivery)}. Soon our team will contact you with a detailed video of your pair and order confirmation.`
-                    : `Your COD order is placed with Rs. 0 Advance Required! You will pay the full total of ${formatPKR(state.codSuccessModal.totals?.finalTotalWithShipping)} in cash upon delivery. Soon our team will contact you with a detailed video of your pair and order confirmation.`
+                  isCodAdvancePolicyActive
+                    ? `Your COD order is logged! Please deposit Rs. ${activeCodDepositAmount} advance into JS Bank (Ali Ammar - 03328559003 | IBAN: ${BANK_IBAN}). Remaining balance on delivery: ${formatPKR(state.codSuccessModal.totals?.payableOnDelivery)}. Soon our team will contact you with a detailed video of your pair and order confirmation.`
+                    : `Your COD order is placed with Rs. 0 Advance Required! You will pay the full total of ${formatPKR(state.codSuccessModal.totals?.finalTotalWithShipping)} in cash upon delivery.`
                 }
               </p>
-              <div class="pt-1">
-                <button onclick="state.codSuccessModal = null; setView('home');" class="w-full bg-[#FF5500] text-black font-black py-2.5 rounded-xl text-xs">Done</button>
-              </div>
+              <button onclick="state.codSuccessModal = null; setView('home');" class="w-full bg-[#FF5500] text-black font-black py-2.5 rounded-xl text-xs">Done</button>
             </div>
           </div>`
         : '';
 
       const reviewLightboxHtml = state.reviewLightboxModal
-        ? `<div onclick="closeReviewPhotoLightbox()" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4 sm:p-6">
-            <div onclick="event.stopPropagation()" class="relative max-w-3xl w-full bg-[#140903] border-2 border-[#FF5500] rounded-3xl overflow-hidden shadow-[0_0_60px_rgba(255,85,0,0.45)] flex flex-col">
-              <div class="flex items-center justify-between px-5 py-3.5 bg-[#0A0401] border-b border-[#FF5500]/30">
-                <div class="flex items-center gap-2.5">
-                  <span class="bg-[#FF5500] text-black text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full">
-                    Verified Buyer Photo
-                  </span>
-                  <span class="text-xs sm:text-sm font-black text-white">
-                    ${escapeHtml(state.reviewLightboxModal.name || 'Customer')} • ${escapeHtml(state.reviewLightboxModal.city || 'Pakistan')}
-                  </span>
-                  <span class="text-amber-400 text-xs tracking-widest">
-                    ${'★'.repeat(Math.min(5, Math.max(1, Number(state.reviewLightboxModal.rating) || 5)))}
-                  </span>
+        ? `<div onclick="closeReviewPhotoLightbox()" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+            <div onclick="event.stopPropagation()" class="max-w-3xl w-full bg-[#140802] border-2 border-[#FF5500] rounded-3xl overflow-hidden shadow-[0_0_60px_rgba(255,85,0,0.4)]">
+              <div class="flex items-center justify-between px-5 py-3.5 border-b border-[#FF5500]/30">
+                <div>
+                  <span class="text-xs font-black text-[#FF5500]">VERIFIED CUSTOMER PHOTO • ${escapeHtml(state.reviewLightboxModal.city || 'Pakistan')}</span>
+                  <h4 class="text-sm font-black text-white">${escapeHtml(state.reviewLightboxModal.name || '')} — ${escapeHtml(state.reviewLightboxModal.pairName || '')}</h4>
                 </div>
-                <button
-                  type="button"
-                  onclick="closeReviewPhotoLightbox()"
-                  class="w-8 h-8 rounded-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black flex items-center justify-center text-sm transition"
-                  title="Close Full Frame"
-                >
-                  ✕
-                </button>
+                <button type="button" onclick="closeReviewPhotoLightbox()" class="bg-[#FF5500] text-black font-black px-3 py-1 rounded-lg text-xs">✕ Close</button>
               </div>
-
-              <div class="bg-[#060200] flex items-center justify-center max-h-[72vh] overflow-hidden p-2 sm:p-4">
-                <img
-                  src="${escapeHtml(state.reviewLightboxModal.imageUrl)}"
-                  alt="Full frame customer review photo"
-                  class="max-w-full max-h-[68vh] w-auto h-auto object-contain rounded-2xl border border-[#FF5500]/25"
-                />
+              <div class="bg-black flex items-center justify-center max-h-[75vh] overflow-hidden">
+                <img src="${escapeHtml(state.reviewLightboxModal.imageUrl)}" alt="Customer review full frame" class="max-h-[75vh] w-auto object-contain" />
               </div>
-
-              <div class="p-4 sm:p-5 bg-[#0D0602] border-t border-[#FF5500]/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div class="space-y-1">
-                  <div class="text-xs font-black text-[#FF5500]">
-                    ${escapeHtml(state.reviewLightboxModal.pairName || '1-of-1 Authentic Pair')}
-                  </div>
-                  <p class="text-xs sm:text-sm text-orange-100/90 leading-relaxed">
-                    "${escapeHtml(state.reviewLightboxModal.comment || '')}"
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onclick="closeReviewPhotoLightbox()"
-                  class="bg-[#1A0D05] hover:bg-[#FF5500] text-orange-200 hover:text-black border border-[#FF5500]/45 font-black px-5 py-2.5 rounded-xl text-xs transition shrink-0"
-                >
-                  Close Preview
-                </button>
+              <div class="p-4 text-xs text-orange-100/90 flex items-center justify-between gap-3">
+                <p>"${escapeHtml(state.reviewLightboxModal.comment || '')}"</p>
+                <span class="text-amber-400 font-bold shrink-0">${'★'.repeat(Math.min(5, Math.max(1, Number(state.reviewLightboxModal.rating) || 5)))}</span>
               </div>
             </div>
           </div>`
@@ -4767,14 +5212,29 @@
         <footer class="relative z-10 border-t border-[#FF5500]/25 bg-[#090401] mt-16 py-10 px-4 sm:px-6">
           <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-6">
             <div class="flex items-center gap-3">
-              <div class="bg-[#FF5500] text-black font-black tracking-tight px-3 py-1 rounded text-sm shadow-[0_0_15px_rgba(255,85,0,0.45)]">PRESETS</div>
-              <span class="text-xs text-orange-200/70">1-of-1 Authentic Pre-Loved Kicks • Nationwide Delivery in Pakistan</span>
+              <div class="bg-[#FF5500] text-black font-black tracking-tight px-3 py-1 rounded text-sm shadow-[0_0_15px_rgba(255,85,0,0.45)]">
+                PRESETS
+              </div>
+              <span class="text-xs text-orange-200/70">
+                1-of-1 Authentic Pre-Loved Kicks • Nationwide Delivery in Pakistan
+              </span>
             </div>
+
             <div class="flex flex-wrap items-center gap-3 text-xs">
-              <button type="button" onclick="setView('policies')" class="text-orange-200/75 hover:text-white underline">Return & Exchange Policy</button>
-              <button type="button" onclick="state.returnModalOpen = true; renderApp();" class="text-orange-200/75 hover:text-white underline">Return Pair</button>
-              <button type="button" onclick="state.cancelModalOpen = true; renderApp();" class="text-orange-200/75 hover:text-white underline">Cancel Order</button>
-              <button type="button" onclick="setView('boss')" class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg transition ${state.activeView === 'boss' ? 'bg-[#FF5500] text-black font-bold shadow-[0_0_15px_rgba(255,85,0,0.5)]' : 'bg-[#1A0D05] border border-[#FF5500]/30 text-[#FF5500] hover:bg-[#FF5500]/15'}">
+              <button type="button" onclick="setView('policies')" class="text-orange-200/75 hover:text-white underline">
+                1-Day Return & Exchange Policy
+              </button>
+              <button type="button" onclick="state.returnModalOpen = true; renderApp();" class="text-orange-200/75 hover:text-white underline">
+                Return Pair
+              </button>
+              <button type="button" onclick="state.cancelModalOpen = true; renderApp();" class="text-orange-200/75 hover:text-white underline">
+                Cancel Order
+              </button>
+              <button
+                type="button"
+                onclick="setView('boss')"
+                class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg transition ${state.activeView === 'boss' ? 'bg-[#FF5500] text-black font-bold shadow-[0_0_15px_rgba(255,85,0,0.5)]' : 'bg-[#1A0D05] border border-[#FF5500]/30 text-[#FF5500] hover:bg-[#FF5500]/15'}"
+              >
                 ${iconSvg('lock', 'w-3.5 h-3.5')}
                 <span>Boss Mode</span>
               </button>
@@ -5205,11 +5665,16 @@
     }
 
     // Initialize Application on Load
-    window.addEventListener('DOMContentLoaded', () => {
+    window.addEventListener('DOMContentLoaded', async () => {
       if (window.emailjs) {
         try {
           window.emailjs.init(EMAILJS_PUBLIC_KEY);
         } catch (e) {}
+      }
+      // Restore unlimited IndexedDB inventory if present before initial render
+      const cachedIdbSneakers = await idbVault.get('presets_sneakers_v16');
+      if (Array.isArray(cachedIdbSneakers) && cachedIdbSneakers.length > state.sneakers.length) {
+        state.sneakers = cachedIdbSneakers;
       }
       renderApp();
       initGlobalParticleCanvas();

@@ -3,7 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>PRESETS — 1-of-1 Authentic Kicks | Pakistan</title>
+  <!-- Preconnect to Supabase Cloud for zero-latency TLS handshake -->
+  <link rel="preconnect" href="https://oirjamjggwnsuipbsksu.supabase.co" crossorigin>
+  <link rel="dns-prefetch" href="https://oirjamjggwnsuipbsksu.supabase.co">
+  <script>
+    // 1. Purge any legacy Service Workers, CacheStorage, and stale v1-v16 keys so the browser never serves an older version
+    (function () {
+      try {
+        const CURRENT_SCHEMA_VERSION = 'presets_cloud_v17_live';
+        if (localStorage.getItem('presets_active_version') !== CURRENT_SCHEMA_VERSION) {
+          Object.keys(localStorage).forEach(function (k) {
+            if (k.indexOf('presets_') === 0 && k !== 'presets_boss_auth_v16') {
+              localStorage.removeItem(k);
+            }
+          });
+          localStorage.setItem('presets_active_version', CURRENT_SCHEMA_VERSION);
+        }
+        if ('serviceWorker' in navigator && navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
+          Promise.resolve()
+            .then(function () {
+              return navigator.serviceWorker.getRegistrations();
+            })
+            .then(function (regs) {
+              if (Array.isArray(regs)) {
+                regs.forEach(function (r) {
+                  if (r && typeof r.unregister === 'function') {
+                    Promise.resolve(r.unregister()).catch(function () {});
+                  }
+                });
+              }
+            })
+            .catch(function () {});
+        }
+        if ('caches' in window && window.caches && typeof window.caches.keys === 'function') {
+          Promise.resolve()
+            .then(function () {
+              return window.caches.keys();
+            })
+            .then(function (names) {
+              if (Array.isArray(names)) {
+                names.forEach(function (n) {
+                  Promise.resolve(window.caches.delete(n)).catch(function () {});
+                });
+              }
+            })
+            .catch(function () {});
+        }
+      } catch (e) {}
+
+      // 2. Start parallel un-cached Supabase pre-fetch in <head> before body even parses
+      const url = 'https://oirjamjggwnsuipbsksu.supabase.co/rest/v1';
+      const key = 'sb_publishable_pUhyrvDdYtvugo_9jbTEcA_-i8WP5mm';
+      const headers = {
+        apikey: key,
+        Authorization: 'Bearer ' + key,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache'
+      };
+      const bust = '_t=' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      window.__PRESETS_BOOT_FETCH__ = {
+        products: fetch(url + '/presets_inventory?select=*&order=created_at.desc&limit=10000&' + bust, { method: 'GET', cache: 'no-store', headers: headers }).then(r => r.ok ? r.json() : null).catch(() => null),
+        settings: fetch(url + '/presets_settings?id=eq.global_config&select=*&' + bust, { method: 'GET', cache: 'no-store', headers: headers }).then(r => r.ok ? r.json() : null).catch(() => null),
+        reviews: fetch(url + '/reviews?select=*&order=created_at.desc&' + bust, { method: 'GET', cache: 'no-store', headers: headers }).then(r => r.ok ? r.json() : null).catch(() => null)
+      };
+    })();
+  </script>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- EmailJS Browser SDK for 2FA Security -->
@@ -119,9 +187,62 @@
     .presets-orbit-ring-2 {
       animation: presetsOrbitSpinReverse 34s linear infinite;
     }
+    /* Anti-Blink / Zero-Flicker Boot Veil & Smooth Hydration Transition */
+    #presets-boot-veil {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: radial-gradient(circle at 50% 22%, #1D0B03 0%, #0D0602 65%, #070301 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.42s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: opacity, visibility;
+    }
+    #presets-boot-veil.veil-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #app-root {
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.38s cubic-bezier(0.16, 1, 0.3, 1), transform 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: opacity, transform;
+    }
+    #app-root.app-hydrated {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    @keyframes bootBarPulse {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
+    .boot-progress-bar {
+      width: 55%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, #FF5500, #FBBF24, transparent);
+      animation: bootBarPulse 1.1s ease-in-out infinite;
+    }
   </style>
 </head>
 <body class="min-h-screen bg-[#0D0602] text-zinc-100 selection:bg-[#FF5500] selection:text-black relative overflow-x-hidden">
+
+  <!-- Instant Zero-Blink Luxury Boot Veil (Prevents Stale Flash & Layout Jumps) -->
+  <div id="presets-boot-veil" aria-hidden="true">
+    <div class="flex flex-col items-center space-y-4 px-6 text-center">
+      <div class="bg-[#FF5500] text-black font-black tracking-tight px-5 py-1.5 rounded-lg text-2xl sm:text-3xl shadow-[0_0_35px_rgba(255,85,0,0.75)]">
+        PRESETS
+      </div>
+      <div class="text-[10px] sm:text-xs font-black uppercase tracking-[0.35em] text-orange-200/85">
+        1-OF-1 AUTHENTIC KICKS • LIVE CLOUD VAULT
+      </div>
+      <div class="w-48 sm:w-56 h-1 bg-[#1F0E05] rounded-full overflow-hidden border border-[#FF5500]/35">
+        <div class="boot-progress-bar"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- Ambient Luxury Motion Graphics Layer (Floating Gold & Neon-Orange Rings) -->
   <div class="fixed inset-0 pointer-events-none z-0 overflow-hidden">
@@ -918,7 +1039,7 @@
 
     const supabaseRest = {
       async fetchSettings() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_settings?id=eq.global_config&select=*`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_settings?id=eq.global_config&select=*&_t=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: supabaseHeaders
@@ -940,7 +1061,7 @@
         return Array.isArray(data) && data[0] ? data[0] : payload;
       },
       async fetchProducts() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?select=*&order=created_at.desc&limit=10000`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_inventory?select=*&order=created_at.desc&limit=10000&_t=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: supabaseHeaders
@@ -970,7 +1091,7 @@
         if (!res.ok) throw new Error(`Supabase delete inventory HTTP ${res.status}`);
       },
       async fetchOrders() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?select=*&order=created_at.desc`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_orders?select=*&order=created_at.desc&_t=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: supabaseHeaders
@@ -999,7 +1120,7 @@
         if (!res.ok) throw new Error(`Supabase delete order HTTP ${res.status}`);
       },
       async fetchDeliverySlips() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?select=*&order=created_at.desc`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/presets_delivery_slips?select=*&order=created_at.desc&_t=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: supabaseHeaders
@@ -1029,7 +1150,7 @@
         if (!res.ok) throw new Error(`Supabase delete slip HTTP ${res.status}`);
       },
       async fetchReviews() {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?select=*&order=created_at.desc`, {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/reviews?select=*&order=created_at.desc&_t=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: supabaseHeaders
@@ -1063,32 +1184,27 @@
     // ==========================================
     // 4. APPLICATION STATE (PLAIN JS)
     // ==========================================
+    let lastCloudStateHash = '';
+    function computeCloudStateHash(sneakersArr, settingsObj, reviewsArr, ordersArr, slipsArr) {
+      try {
+        const pSig = (sneakersArr || []).map(p => `${p.id}:${p.status}:${p.price}:${p.discountPercent}:${p.customPairId}:${(p.images || []).length}`).join('|');
+        const sSig = JSON.stringify(settingsObj || {});
+        const rSig = (reviewsArr || []).map(r => `${r.id}:${r.rating}`).join('|');
+        const oSig = (ordersArr || []).map(o => `${o.id}:${o.status}`).join('|');
+        const slSig = (slipsArr || []).map(s => s.slipId).join('|');
+        return `${pSig}__${sSig}__${rSig}__${oSig}__${slSig}`;
+      } catch (e) {
+        return String(Date.now());
+      }
+    }
+
     const state = {
-      sneakers: safeLoad('presets_sneakers_v16', INITIAL_SNEAKERS),
+      isInitialCloudLoading: true,
+      lastCloudSyncedAt: '',
+      sneakers: [],
       orders: safeLoad('presets_orders_v16', []),
       deliverySlips: safeLoad('presets_slips_v16', []),
-      reviews: safeLoad('presets_reviews_v16', [
-        {
-          id: 'REV-101',
-          name: 'Hamza Tariq',
-          city: 'Islamabad',
-          pairName: 'Air Force 1 Low Brown Kelp',
-          rating: 5,
-          comment: 'Received my pair today. The insole measurement in inches was 100% accurate and condition is super clean.',
-          imageUrl: '',
-          date: '2 days ago'
-        },
-        {
-          id: 'REV-102',
-          name: 'Zainab Raza',
-          city: 'Lahore',
-          pairName: 'Air Jordan 1 Retro Low',
-          rating: 5,
-          comment: 'Used full prepayment via WhatsApp and got the 5% discount. Clean packaging and authentic 1-of-1 sneaker.',
-          imageUrl: '',
-          date: '5 days ago'
-        }
-      ]),
+      reviews: safeLoad('presets_reviews_v16', []),
       storeConfig: (() => {
         const loaded = safeLoad('presets_config_v16', {
           frontBannerText: '5% OFF ON FULL PREPAYMENT • FREE HOME DELIVERY ON ORDERS ABOVE RS. 8,000 • 1-OF-1 AUTHENTIC KICKS',
@@ -1477,15 +1593,31 @@
           throw new Error('Could not reach Supabase tables');
         }
 
+        state.isInitialCloudLoading = false;
         state.supabaseSyncStatus = 'Cloud Database Connected';
+        state.lastCloudSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        const nextHash = computeCloudStateHash(
+          state.sneakers,
+          state.storeConfig,
+          state.reviews,
+          state.orders,
+          state.deliverySlips
+        );
+        const hasDataChanged = nextHash !== lastCloudStateHash;
+        lastCloudStateHash = nextHash;
+
         persistAllLocal();
-        if (!silent || !isUserTypingInInput()) {
+        if (!silent) {
+          renderApp();
+        } else if (hasDataChanged && !isUserTypingInInput() && window.__PRESETS_HYDRATED_ONCE__) {
           renderApp();
         }
         if (!silent) {
-          showToast('Synced all Supabase tables (Settings, Inventory, Orders, Slips & Reviews)!');
+          showToast('Latest live version synced from Supabase Cloud!');
         }
       } catch (err) {
+        state.isInitialCloudLoading = false;
         state.supabaseSyncStatus = 'Local Fallback Mode';
         if (!silent) {
           renderApp();
@@ -1494,11 +1626,102 @@
       }
     }
 
+    function revealHydratedApp() {
+      if (window.__PRESETS_HYDRATED_ONCE__) return;
+      window.__PRESETS_HYDRATED_ONCE__ = true;
+      lastCloudStateHash = computeCloudStateHash(
+        state.sneakers,
+        state.storeConfig,
+        state.reviews,
+        state.orders,
+        state.deliverySlips
+      );
+      renderApp();
+      requestAnimationFrame(() => {
+        const root = document.getElementById('app-root');
+        const veil = document.getElementById('presets-boot-veil');
+        if (root) root.classList.add('app-hydrated');
+        if (veil) {
+          veil.classList.add('veil-hidden');
+          setTimeout(() => {
+            if (veil && veil.parentNode) veil.style.display = 'none';
+          }, 460);
+        }
+      });
+    }
+
+    // Fast Boot Loader: consumes the parallel <head> pre-fetch in a single atomic render so old cached products never blink
+    async function hydrateFromBootPrefetch() {
+      const boot = window.__PRESETS_BOOT_FETCH__;
+      if (!boot) {
+        await syncFromSupabase(true);
+        return;
+      }
+      try {
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('timeout'), 3800));
+        const result = await Promise.race([
+          Promise.all([boot.products, boot.settings, boot.reviews]),
+          timeoutPromise
+        ]);
+
+        if (Array.isArray(result)) {
+          const [rawProducts, rawSettings, rawReviews] = result;
+          let gotCloud = false;
+          if (Array.isArray(rawProducts)) {
+            state.sneakers = rawProducts.map(mapProductFromDB);
+            gotCloud = true;
+          }
+          if (Array.isArray(rawSettings) && rawSettings[0]) {
+            state.storeConfig = mapSettingsFromDB(rawSettings[0], state.storeConfig);
+            gotCloud = true;
+          }
+          if (Array.isArray(rawReviews)) {
+            state.reviews = rawReviews.map(mapReviewFromDB);
+            gotCloud = true;
+          }
+          if (gotCloud) {
+            state.isInitialCloudLoading = false;
+            state.supabaseSyncStatus = 'Cloud Database Connected';
+            state.lastCloudSyncedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            persistAllLocal();
+          } else {
+            await syncFromSupabase(true);
+          }
+        } else {
+          await syncFromSupabase(true);
+        }
+      } catch (e) {
+        await syncFromSupabase(true);
+      }
+
+      // Fetch remaining Boss Mode tables (orders & delivery slips) quietly in the background without re-rendering the storefront
+      Promise.allSettled([
+        supabaseRest.fetchOrders(),
+        supabaseRest.fetchDeliverySlips()
+      ]).then(([ordersRes, slipsRes]) => {
+        let updatedBossTables = false;
+        if (ordersRes.status === 'fulfilled') {
+          state.orders = ordersRes.value;
+          updatedBossTables = true;
+        }
+        if (slipsRes.status === 'fulfilled') {
+          state.deliverySlips = slipsRes.value;
+          updatedBossTables = true;
+        }
+        if (updatedBossTables) {
+          persistAllLocal();
+          if (state.activeView === 'boss' && !isUserTypingInInput()) {
+            renderApp();
+          }
+        }
+      });
+    }
+
     function initSupabaseRealtimeSubscription() {
       // Instant background HTTP REST sync when user switches back to tab or focuses window
       window.addEventListener('focus', () => syncFromSupabase(true));
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
+      window.addEventListener('pageshow', (event) => {
+        if (event.persisted) {
           syncFromSupabase(true);
         }
       });
@@ -3326,7 +3549,21 @@
 
             <!-- 6 Pairs Per Row Storefront Grid -->
             <div id="sneaker-kinetic-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3.5" style="transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
-              ${cardsHtml}
+              ${
+                state.isInitialCloudLoading && state.sneakers.length === 0
+                  ? Array.from({ length: 6 })
+                      .map(
+                        () => `
+                        <div class="bg-[#150A03] border border-[#FF5500]/20 rounded-2xl overflow-hidden p-3 space-y-2.5 animate-pulse">
+                          <div class="w-full aspect-square bg-[#221005] rounded-xl"></div>
+                          <div class="h-3 bg-[#221005] rounded w-2/3"></div>
+                          <div class="h-3.5 bg-[#221005] rounded w-full"></div>
+                          <div class="h-6 bg-[#FF5500]/20 rounded-lg w-full"></div>
+                        </div>`
+                      )
+                      .join('')
+                  : cardsHtml
+              }
             </div>
           </section>
 
@@ -5671,16 +5908,24 @@
           window.emailjs.init(EMAILJS_PUBLIC_KEY);
         } catch (e) {}
       }
-      // Restore unlimited IndexedDB inventory if present before initial render
-      const cachedIdbSneakers = await idbVault.get('presets_sneakers_v16');
-      if (Array.isArray(cachedIdbSneakers) && cachedIdbSneakers.length > state.sneakers.length) {
-        state.sneakers = cachedIdbSneakers;
-      }
-      renderApp();
       initGlobalParticleCanvas();
       startCountdownAndSecurityListeners();
-      syncFromSupabase(true);
       initSupabaseRealtimeSubscription();
+
+      // Immediately consume the <head> pre-fetched Supabase data so old cached products never flash first
+      await hydrateFromBootPrefetch();
+
+      // Only fall back to IndexedDB if Supabase was completely unreachable and local state is empty
+      if (state.sneakers.length === 0 && state.supabaseSyncStatus !== 'Cloud Database Connected') {
+        const cachedIdbSneakers = await idbVault.get('presets_sneakers_v16');
+        if (Array.isArray(cachedIdbSneakers) && cachedIdbSneakers.length > 0) {
+          state.sneakers = cachedIdbSneakers;
+        } else {
+          state.sneakers = INITIAL_SNEAKERS;
+        }
+      }
+      state.isInitialCloudLoading = false;
+      revealHydratedApp();
     });
   </script>
 </body>

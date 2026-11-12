@@ -384,6 +384,87 @@
       };
     }
 
+    function getNextAvailablePairCode(pairsList = []) {
+      const list = Array.isArray(pairsList) ? pairsList : [];
+      let maxNum = 0;
+      const usedCodes = new Set();
+      list.forEach((p, idx) => {
+        const raw = String(p?.customPairId || '').trim();
+        if (raw) usedCodes.add(raw.toLowerCase());
+        const num = parseInt(raw, 10);
+        if (!isNaN(num) && num > maxNum) {
+          maxNum = num;
+        }
+        const idNum = parseInt(String(p?.id || ''), 10);
+        if (!isNaN(idNum) && String(idNum) === String(p?.id || '').trim() && idNum > maxNum) {
+          maxNum = idNum;
+        }
+      });
+      let candidate = Math.max(maxNum + 1, list.length + 1);
+      while (usedCodes.has(String(candidate))) {
+        candidate++;
+      }
+      return String(candidate);
+    }
+
+    function ensureUniquePairs(pairsList = []) {
+      if (!Array.isArray(pairsList)) return { cleaned: [], changed: false };
+      const seenIds = new Set();
+      const seenCodes = new Set();
+      const seenExactSignatures = new Set();
+      let changed = false;
+      const cleaned = [];
+
+      // First find max numeric code for fallback assignment
+      let nextFallbackCode = 1;
+      pairsList.forEach((p) => {
+        const cNum = parseInt(String(p?.customPairId || ''), 10);
+        if (!isNaN(cNum) && cNum >= nextFallbackCode) {
+          nextFallbackCode = cNum + 1;
+        }
+      });
+
+      pairsList.forEach((rawPair, idx) => {
+        if (!rawPair || typeof rawPair !== 'object') return;
+        const p = normalizePairImages({ ...rawPair });
+        let pairId = String(p.id || '').trim();
+        const firstImg = String(p.images?.[0] || '').slice(0, 120);
+        const exactSig = `${pairId}||${String(p.name || '').trim()}||${p.price}||${p.sizeEU}||${firstImg}`;
+
+        // If an exact duplicate clone was created by an old ID collision, skip the duplicate clone
+        if (pairId && seenIds.has(pairId) && seenExactSignatures.has(exactSig)) {
+          changed = true;
+          return;
+        }
+        seenExactSignatures.add(exactSig);
+
+        // Ensure globally unique internal pair.id (never colliding across two pairs)
+        if (!pairId || seenIds.has(pairId)) {
+          pairId = `pair-${Date.now()}-${idx}-${generateUUID().slice(0, 8)}`;
+          p.id = pairId;
+          changed = true;
+        }
+        seenIds.add(pairId);
+
+        // Ensure unique customPairId display code
+        let code = String(p.customPairId || '').trim();
+        if (!code || seenCodes.has(code.toLowerCase())) {
+          while (seenCodes.has(String(nextFallbackCode).toLowerCase())) {
+            nextFallbackCode++;
+          }
+          code = String(nextFallbackCode);
+          p.customPairId = code;
+          nextFallbackCode++;
+          changed = true;
+        }
+        seenCodes.add(code.toLowerCase());
+
+        cleaned.push(p);
+      });
+
+      return { cleaned, changed };
+    }
+
     const SHOE_CATEGORIES = [
       'All',
       'Casual',
@@ -990,10 +1071,7 @@
             candidateUrl = `${CF_API}${candidateUrl}`;
           }
           if (isValidHttpsImageUrl(candidateUrl)) {
-            const canLoad = await verifyRemoteImageLoads(candidateUrl, 4000);
-            if (canLoad) {
-              return candidateUrl;
-            }
+            return candidateUrl;
           }
           return base64Fallback;
         } catch (err) {
@@ -1059,7 +1137,7 @@
     // 4. APPLICATION STATE (PLAIN JS)
     // ==========================================
     const state = {
-      sneakers: (safeLoad('presets_sneakers_v16', []) || []).filter((p) => !isDemoProduct(p)).map(normalizePairImages),
+      sneakers: ensureUniquePairs((safeLoad('presets_sneakers_v16', []) || []).filter((p) => !isDemoProduct(p))).cleaned,
       orders: safeLoad('presets_orders_v16', []),
       returns: safeLoad('presets_returns_v16', []),
       cancellations: safeLoad('presets_cancellations_v16', []),
@@ -1120,7 +1198,7 @@
       codSuccessModal: null,
       prepaidConfirmScreen: null,
       simplePrepaidSuccessOrder: null,
-      isAdminAuthenticated: false,
+      isAdminAuthenticated: Boolean(safeLoad('presets_boss_auth_v16', false)),
       adminPasswordInput: '',
       otpStep: 'password',
       generatedOtp: '',
@@ -1208,6 +1286,7 @@
       safeSave('presets_cart_v16', state.cart);
       safeSave('presets_sec_attempts', state.failedLoginAttempts);
       safeSave('presets_sec_lockout', state.lockoutUntil);
+      safeSave('presets_boss_auth_v16', Boolean(state.isAdminAuthenticated));
     }
 
     let toastTimeout = null;
@@ -1368,10 +1447,11 @@
           const mappedProducts = remoteState.products.map((p) =>
             p && p.sizeEU !== undefined ? p : mapProductFromDB(p)
           );
-          const cleanedProducts = mappedProducts.filter((p) => !isDemoProduct(p)).map(normalizePairImages);
-          state.sneakers = cleanedProducts;
-          if (cleanedProducts.length !== mappedProducts.length) {
-            cfWorkerClient.saveState('products', cleanedProducts).catch(() => {});
+          const nonDemo = mappedProducts.filter((p) => !isDemoProduct(p));
+          const { cleaned: uniqueProducts, changed: idsRepaired } = ensureUniquePairs(nonDemo);
+          state.sneakers = uniqueProducts;
+          if (uniqueProducts.length !== mappedProducts.length || idsRepaired) {
+            cfWorkerClient.saveState('products', uniqueProducts).catch(() => {});
           }
         }
 
@@ -1976,12 +2056,27 @@
       if (state.userEnteredOtp.trim() === state.generatedOtp.trim()) {
         state.isAdminAuthenticated = true;
         state.otpStatusMessage = '';
-        showToast('Access Granted! Welcome to Boss Mode.');
+        safeSave('presets_boss_auth_v16', true);
+        persistAllLocal();
+        showToast('Access Granted! Boss Mode will stay logged in on this device until you Log Out.');
       } else {
         state.otpStatusType = 'error';
         state.otpStatusMessage = 'Invalid 6-digit code. Please try again.';
         showToast('Incorrect OTP code.');
       }
+      renderApp();
+    }
+
+    function handleBossLogout() {
+      state.isAdminAuthenticated = false;
+      state.otpStep = 'password';
+      state.adminPasswordInput = '';
+      state.userEnteredOtp = '';
+      state.generatedOtp = '';
+      state.otpStatusMessage = '';
+      safeSave('presets_boss_auth_v16', false);
+      persistAllLocal();
+      showToast('Logged out of Boss Mode.');
       renderApp();
     }
 
@@ -2665,14 +2760,31 @@
         return;
       }
 
-      const defaultNextCode = String(state.sneakers.length + 1);
-      const finalCustomPairId = String(state.pairForm.customPairId || '').trim() || defaultNextCode;
+      const otherPairs = state.editingPairId
+        ? state.sneakers.filter((s) => String(s.id) !== String(state.editingPairId))
+        : state.sneakers;
+      const defaultNextCode = getNextAvailablePairCode(otherPairs);
+      let requestedCode = String(state.pairForm.customPairId || '').trim();
+      const codeAlreadyUsed =
+        requestedCode &&
+        otherPairs.some(
+          (s) => String(getPairCode(s)).toLowerCase() === requestedCode.toLowerCase()
+        );
+      const finalCustomPairId =
+        !requestedCode || (!state.editingPairId && codeAlreadyUsed)
+          ? defaultNextCode
+          : requestedCode;
+
+      const uniqueInternalId = state.editingPairId
+        ? String(state.editingPairId)
+        : `pair-${Date.now()}-${generateUUID().slice(0, 8)}`;
+
       const discPct = Math.min(90, Math.max(0, Number(state.pairForm.discountPercent) || 0));
       const origPrice = Number(state.pairForm.price) || 0;
       const salePrice = Math.round(origPrice * (1 - discPct / 100));
 
       const formattedPair = {
-        id: state.editingPairId ? String(state.editingPairId) : finalCustomPairId,
+        id: uniqueInternalId,
         customPairId: finalCustomPairId,
         imageRatio: '1:1',
         imageFit: state.pairForm.imageFit || 'cover',
@@ -4750,6 +4862,10 @@
                 <button type="button" onclick="toggleCodPolicyMasterSwitch()" class="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition ${isCodAdvancePolicyActive ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40'}">
                   ${iconSvg('power', 'w-3.5 h-3.5')}
                   <span>${isCodAdvancePolicyActive ? `COD Rs. ${activeCodDepositAmount} Policy: ON` : 'COD Advance Policy: OFF'}</span>
+                </button>
+                <button type="button" onclick="handleBossLogout()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-rose-600 hover:bg-rose-500 text-white transition shadow-[0_0_15px_rgba(225,29,72,0.35)]">
+                  ${iconSvg('lock', 'w-3.5 h-3.5')}
+                  <span>Log Out</span>
                 </button>
               </div>
 

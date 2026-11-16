@@ -261,6 +261,11 @@
     const EMAILJS_TEMPLATE_ID = 'template_alfz9aj';
     const EMAILJS_PUBLIC_KEY = '-l45_rte6MVpDLpo-';
 
+    // Order Notification EmailJS Configuration
+    const EMAILJS_ORDER_PUBLIC_KEY = '-l45_rte6MVpDLpo-';
+    const EMAILJS_ORDER_SERVICE_ID = 'service_2z5df47';
+    const EMAILJS_ORDER_TEMPLATE_ID = 'template_g06uicc';
+
     const CF_API = "https://" + "presets-api.ammmrkhan13.workers.dev";
 
     window.PRESETS_FALLBACK_IMG =
@@ -970,32 +975,71 @@
       };
     }
 
+    function getReviewSignature(nameStr, commentStr) {
+      return `${String(nameStr || '').trim().toLowerCase()}||${String(commentStr || '').trim().toLowerCase()}`;
+    }
+
+    function getSavedReviewPhotoMap() {
+      return safeLoad('presets_review_photos_v16', {}) || {};
+    }
+
+    function saveReviewPhotoToMap(id, name, comment, imgUrl) {
+      if (!imgUrl || typeof imgUrl !== 'string') return;
+      const map = getSavedReviewPhotoMap();
+      if (id) map[`id:${id}`] = imgUrl;
+      const sig = getReviewSignature(name, comment);
+      if (sig && sig !== '||') map[`sig:${sig}`] = imgUrl;
+      safeSave('presets_review_photos_v16', map);
+    }
+
     function mapReviewFromDB(row) {
+      if (!row || typeof row !== 'object') return null;
+      const id = String(row.id || generateUUID());
+      const name = String(row.customer_name || row.name || 'Verified Customer');
+      const comment = String(row.comment || '');
+      const photoMap = getSavedReviewPhotoMap();
+      const sig = getReviewSignature(name, comment);
+      const rawImg =
+        row.imageUrl ||
+        row.image_url ||
+        row.image ||
+        row.photo ||
+        photoMap[`id:${id}`] ||
+        photoMap[`sig:${sig}`] ||
+        '';
+      const cleanImg = isRenderableImageSrc(String(rawImg)) ? String(rawImg).trim() : '';
+      if (cleanImg) {
+        saveReviewPhotoToMap(id, name, comment, cleanImg);
+      }
       return {
-        id: String(row.id || generateUUID()),
-        name: String(row.customer_name || row.name || 'Verified Customer'),
+        id,
+        name,
         city: String(row.city || 'Pakistan'),
         pairName: String(row.product_name || row.pairName || '1-of-1 Authentic Pair'),
         rating: Number(row.rating || 5),
-        comment: String(row.comment || ''),
-        imageUrl: row.image_url ? String(row.image_url) : '',
-        date: row.created_at
+        comment,
+        imageUrl: cleanImg,
+        date: row.date
+          ? String(row.date)
+          : row.created_at
           ? new Date(row.created_at).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' })
           : 'Just now'
       };
     }
 
     function mapReviewToDB(rev) {
+      const img = String(rev.imageUrl || rev.image_url || '').trim();
       const payload = {
         customer_name: String(rev.name || rev.customer_name || 'Customer').trim(),
+        name: String(rev.name || rev.customer_name || 'Customer').trim(),
         city: String(rev.city || 'Pakistan').trim(),
         product_name: String(rev.pairName || rev.product_name || '1-of-1 Authentic Pair').trim(),
+        pairName: String(rev.pairName || rev.product_name || '1-of-1 Authentic Pair').trim(),
         rating: Math.min(5, Math.max(1, Number(rev.rating || 5))),
-        comment: String(rev.comment || '').trim()
+        comment: String(rev.comment || '').trim(),
+        image_url: img,
+        imageUrl: img
       };
-      if (rev.imageUrl || rev.image_url) {
-        payload.image_url = String(rev.imageUrl || rev.image_url).trim();
-      }
       return payload;
     }
 
@@ -1096,9 +1140,10 @@
           : Array.isArray(data?.state?.reviews)
           ? data.state.reviews
           : [];
-        return rawReviews.map((r) =>
-          r.comment !== undefined && r.name !== undefined ? r : mapReviewFromDB(r)
-        );
+        if (rawReviews.length === 0 && Array.isArray(data?.state?.reviewList)) {
+          return data.state.reviewList.map(mapReviewFromDB).filter(Boolean);
+        }
+        return rawReviews.map(mapReviewFromDB).filter(Boolean);
       },
       async insertReview(review) {
         const payload = {
@@ -1510,10 +1555,12 @@
           : Array.isArray(remoteState.reviews)
           ? remoteState.reviews
           : null;
+        if (remoteState.reviewPhotos && typeof remoteState.reviewPhotos === 'object') {
+          const mergedMap = { ...getSavedReviewPhotoMap(), ...remoteState.reviewPhotos };
+          safeSave('presets_review_photos_v16', mergedMap);
+        }
         if (Array.isArray(remoteReviews)) {
-          const mappedReviews = remoteReviews.map((r) =>
-            r && r.comment !== undefined && r.name !== undefined ? r : mapReviewFromDB(r)
-          );
+          const mappedReviews = remoteReviews.map(mapReviewFromDB).filter(Boolean);
           const demoRevs = mappedReviews.filter((r) => isDemoReview(r));
           const cleanedReviews = mappedReviews.filter((r) => !isDemoReview(r));
           state.reviews = cleanedReviews;
@@ -1637,7 +1684,7 @@
     let pendingReviewUploadPromise = null;
 
     async function handleReviewPhotoUpload(inputEl) {
-      let file = inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
+      let file = inputEl && inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
       if (!file) return;
 
       if (/\.(heic|heif)$/i.test(file.name || '') || /heic|heif/i.test(file.type || '')) {
@@ -1651,20 +1698,27 @@
         } catch (err) {}
       }
 
-      const instantBase64 = await compressImageFileToDataUrl(file, 700, 0.78);
-      if (isRenderableImageSrc(instantBase64)) {
-        state.reviewForm.imageUrl = instantBase64;
-        showToast('Review photo attached!');
-        renderApp();
+      const instantBase64 = await compressImageFileToDataUrl(file, 650, 0.75);
+      if (!isRenderableImageSrc(instantBase64)) {
+        showToast('Could not read selected photo. Please try another JPG/PNG image.');
+        return;
       }
 
+      state.reviewForm.imageUrl = instantBase64;
+      showToast('Review photo attached!');
+      renderApp();
+
       pendingReviewUploadPromise = (async () => {
-        const uploadedUrl = await cfWorkerClient.uploadFile(file, 700, 0.78, instantBase64);
-        if (isRenderableImageSrc(uploadedUrl)) {
-          state.reviewForm.imageUrl = uploadedUrl;
-          renderApp();
+        const uploadedUrl = await cfWorkerClient.uploadFile(file, 650, 0.75, instantBase64);
+        if (isValidHttpsImageUrl(uploadedUrl)) {
+          const canLoad = await verifyRemoteImageLoads(uploadedUrl, 3000);
+          if (canLoad) {
+            state.reviewForm.imageUrl = uploadedUrl;
+            renderApp();
+            return uploadedUrl;
+          }
         }
-        return uploadedUrl;
+        return instantBase64;
       })();
 
       await pendingReviewUploadPromise;
@@ -1675,7 +1729,7 @@
       const currentUrl = state.reviewForm.imageUrl;
       state.reviewForm.imageUrl = '';
       renderApp();
-      if (currentUrl && !currentUrl.startsWith('data:')) {
+      if (isValidHttpsImageUrl(currentUrl)) {
         cfWorkerClient.deleteImage(currentUrl).catch(() => {});
       }
     }
@@ -1692,6 +1746,10 @@
       state.isSubmittingReview = true;
       renderApp();
 
+      const attachedPhoto = isRenderableImageSrc(state.reviewForm.imageUrl)
+        ? state.reviewForm.imageUrl.trim()
+        : '';
+
       const newRevPayload = {
         id: generateUUID(),
         name: state.reviewForm.name.trim(),
@@ -1699,20 +1757,34 @@
         pairName: state.reviewForm.pairName.trim() || '1-of-1 Authentic Pair',
         rating: Number(state.reviewForm.rating) || 5,
         comment: state.reviewForm.comment.trim(),
-        imageUrl: state.reviewForm.imageUrl.trim() || '',
+        imageUrl: attachedPhoto,
         date: new Date().toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' })
       };
 
+      if (attachedPhoto) {
+        saveReviewPhotoToMap(newRevPayload.id, newRevPayload.name, newRevPayload.comment, attachedPhoto);
+      }
+
       try {
         const savedRev = await cfWorkerClient.insertReview(newRevPayload);
+        if (savedRev && savedRev.id && attachedPhoto) {
+          saveReviewPhotoToMap(savedRev.id, newRevPayload.name, newRevPayload.comment, attachedPhoto);
+        }
+        cfWorkerClient.saveState('reviewPhotos', getSavedReviewPhotoMap()).catch(() => {});
         const freshReviews = await cfWorkerClient.fetchReviews().catch(() => []);
         if (freshReviews.length > 0) {
-          state.reviews = freshReviews;
+          state.reviews = freshReviews.map((r) => {
+            if (!r.imageUrl && attachedPhoto && getReviewSignature(r.name, r.comment) === getReviewSignature(newRevPayload.name, newRevPayload.comment)) {
+              return { ...r, imageUrl: attachedPhoto };
+            }
+            return r;
+          });
         } else {
-          state.reviews = [savedRev || newRevPayload, ...state.reviews];
+          state.reviews = [{ ...(savedRev || newRevPayload), imageUrl: attachedPhoto }, ...state.reviews];
         }
+        cfWorkerClient.saveState('reviews', state.reviews).catch(() => {});
         safeSave('presets_d1_reviews_seeded', true);
-        showToast('Thank you! Your review is saved to Cloudflare D1.');
+        showToast('Thank you! Your review is live on screen.');
       } catch (err) {
         state.reviews = [newRevPayload, ...state.reviews];
         showToast('Thank you! Your review has been posted.');
@@ -1725,6 +1797,10 @@
     }
 
     async function deleteReviewInBossMode(reviewId) {
+      if (!state.isAdminAuthenticated) {
+        showToast('Only Boss Mode Admin can delete reviews.');
+        return;
+      }
       const targetRev = state.reviews.find((r) => String(r.id) === String(reviewId));
       state.reviews = state.reviews.filter((r) => String(r.id) !== String(reviewId));
       persistAllLocal();
@@ -1754,6 +1830,119 @@
           .filter((r) => r.imageUrl && !r.imageUrl.startsWith('data:'))
           .map((r) => cfWorkerClient.deleteImage(r.imageUrl).catch(() => {}))
       ]);
+    }
+
+    async function sendOrderEmailNotification(order) {
+      if (!order) return;
+      const orderNum = getOrderDisplayNumber(order);
+      const custName = String(order.customer?.fullName || 'Customer');
+      const custPhone = String(order.customer?.phone || 'N/A');
+      const custCity = String(order.customer?.city || 'N/A');
+      const custAddress = String(order.customer?.address || 'N/A');
+      const paymentType = String(order.paymentMethod || 'PREPAID');
+      const totalBill = formatPKR(order.totals?.finalTotalWithShipping || 0);
+      const payableNow = formatPKR(order.totals?.payableNow || 0);
+      const payableOnDelivery = formatPKR(order.totals?.payableOnDelivery || 0);
+      const shippingStr =
+        (order.totals?.shipping ?? SHIPPING_FEE) === 0
+          ? 'FREE (Rs. 0)'
+          : formatPKR(order.totals?.shipping || SHIPPING_FEE);
+
+      const itemsSummary = (order.items || [])
+        .map(
+          (item, idx) =>
+            `${idx + 1}. [Pair #${item.pairCode || orderNum}] ${item.name || item.title} (EU ${item.sizeEU} | Insole ${item.insoleInches || '10.8'}") — ${formatPKR(item.price)}`
+        )
+        .join('\n');
+
+      const fullMessage =
+        `NEW ORDER RECEIVED ON PRESETS!\n\n` +
+        `Order Number: #${orderNum}\n` +
+        `Payment Method: ${paymentType}\n` +
+        `Order Status: ${order.status || 'Pending'}\n` +
+        `Date: ${order.createdAt || new Date().toLocaleString()}\n\n` +
+        `CUSTOMER DETAILS:\n` +
+        `• Name: ${custName}\n` +
+        `• Phone: ${custPhone}\n` +
+        `• City: ${custCity}\n` +
+        `• Address: ${custAddress}\n\n` +
+        `ORDERED SNEAKER(S):\n${itemsSummary}\n\n` +
+        `PAYMENT BREAKDOWN:\n` +
+        `• Home Delivery: ${shippingStr}\n` +
+        `• Total Order Bill: ${totalBill}\n` +
+        `• Payable Now: ${payableNow}\n` +
+        `• Payable on Delivery (COD): ${payableOnDelivery}`;
+
+      const templateParams = {
+        to_email: ADMIN_EMAIL,
+        email: ADMIN_EMAIL,
+        user_email: ADMIN_EMAIL,
+        to_name: 'Ali Ammar (PRESETS Admin)',
+        from_name: custName,
+        reply_to: custPhone,
+        subject: `New PRESETS Order #${orderNum} — ${custName} (${totalBill})`,
+        order_id: `#${orderNum}`,
+        order_number: `${orderNum}`,
+        customer_name: custName,
+        name: custName,
+        customer_phone: custPhone,
+        phone: custPhone,
+        customer_city: custCity,
+        city: custCity,
+        customer_address: custAddress,
+        address: custAddress,
+        payment_method: paymentType,
+        items: itemsSummary,
+        order_items: itemsSummary,
+        pair_details: itemsSummary,
+        shipping: shippingStr,
+        total_amount: totalBill,
+        total_bill: totalBill,
+        total_price: totalBill,
+        payable_now: payableNow,
+        payable_on_delivery: payableOnDelivery,
+        order_status: String(order.status || 'New Order'),
+        created_at: String(order.createdAt || new Date().toLocaleString()),
+        message: fullMessage
+      };
+
+      try {
+        if (window.emailjs && typeof window.emailjs.send === 'function') {
+          await window.emailjs.send(
+            EMAILJS_ORDER_SERVICE_ID,
+            EMAILJS_ORDER_TEMPLATE_ID,
+            templateParams,
+            EMAILJS_ORDER_PUBLIC_KEY
+          );
+        } else {
+          const response = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              service_id: EMAILJS_ORDER_SERVICE_ID,
+              template_id: EMAILJS_ORDER_TEMPLATE_ID,
+              user_id: EMAILJS_ORDER_PUBLIC_KEY,
+              template_params: templateParams
+            })
+          });
+          if (!response.ok) {
+            throw new Error(await response.text());
+          }
+        }
+      } catch (err) {
+        try {
+          await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              service_id: EMAILJS_ORDER_SERVICE_ID,
+              template_id: EMAILJS_ORDER_TEMPLATE_ID,
+              user_id: EMAILJS_ORDER_PUBLIC_KEY,
+              template_params: templateParams
+            })
+          });
+        } catch (e2) {}
+      }
     }
 
     function buildAndSavePrepaidOrder() {
@@ -1818,6 +2007,7 @@
       persistAllLocal();
       cfWorkerClient.saveState('products', state.sneakers).catch(() => {});
       cfWorkerClient.saveState('orders', getRegularOrdersList()).catch(() => {});
+      sendOrderEmailNotification(newOrder).catch(() => {});
 
       return { newOrder, orderNum, pairsList, totals };
     }
@@ -1957,6 +2147,7 @@
       persistAllLocal();
       cfWorkerClient.saveState('products', state.sneakers).catch(() => {});
       cfWorkerClient.saveState('orders', getRegularOrdersList()).catch(() => {});
+      sendOrderEmailNotification(newOrder).catch(() => {});
       renderApp();
     }
 
@@ -3224,18 +3415,11 @@
                   <span class="text-[11px] text-orange-200/50">${escapeHtml(rev.date || '')}</span>
                 </div>
                 <p class="text-xs sm:text-sm text-orange-50/90 leading-relaxed">"${escapeHtml(rev.comment || '')}"</p>
-                ${rev.imageUrl ? `<img src="${escapeHtml(rev.imageUrl)}" alt="Customer review" class="w-full h-32 object-cover rounded-xl border border-[#FF5500]/25 mt-2" />` : ''}
+                ${rev.imageUrl ? `<img src="${escapeHtml(rev.imageUrl)}" onerror="this.onerror=null;this.style.display='none';" alt="Customer review" class="w-full h-36 object-cover rounded-xl border border-[#FF5500]/25 mt-2" />` : ''}
               </div>
               <div class="pt-2 border-t border-[#FF5500]/15 flex items-center justify-between text-xs gap-2">
                 <span class="font-bold text-white">${escapeHtml(rev.name || '')}</span>
-                <div class="flex items-center gap-2">
-                  <span class="text-[#FF5500] font-semibold truncate max-w-[140px]">${escapeHtml(rev.pairName || '')}</span>
-                  ${
-                    state.isAdminAuthenticated
-                      ? `<button type="button" onclick="deleteReviewInBossMode('${escapeHtml(rev.id)}')" class="bg-rose-500/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/40 px-2 py-0.5 rounded text-[10px] font-black transition">Delete</button>`
-                      : ''
-                  }
-                </div>
+                <span class="text-[#FF5500] font-semibold truncate max-w-[150px]">${escapeHtml(rev.pairName || '')}</span>
               </div>
             </div>
           `

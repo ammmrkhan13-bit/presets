@@ -3750,7 +3750,7 @@
               }
             </div>
 
-            <!-- Right Column: Title, Price, Video Guarantee Box, Condition, AI Lab & Action Buttons Below AI Lab -->
+            <!-- Right Column: Title, Price, Action Buttons (Top), Condition, AI Lab & Video Guarantee Box (Below AI Lab) -->
             <div class="lg:col-span-6 flex flex-col justify-between space-y-4">
               <div class="space-y-3.5">
                 <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -3778,15 +3778,27 @@
                   </div>
                 </div>
 
-                <!-- 100% Video Guarantee Box (Slightly Bigger, Placed Below Price Where Add to Bag Was) -->
-                <div class="bg-[#0B0502] border border-emerald-500/45 rounded-xl p-3.5 sm:p-4 flex items-center gap-3 shadow-[0_0_20px_rgba(16,185,129,0.12)]">
-                  <div class="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0">
-                    ${iconSvg('check', 'w-5 h-5')}
-                  </div>
-                  <p class="text-xs sm:text-sm text-orange-100/95 leading-relaxed">
-                    <strong class="text-emerald-400">100% Video Guarantee:</strong> Close-up inspection video of this pair is sent on WhatsApp with order confirmation.
-                  </p>
-                </div>
+                <!-- Action Buttons (Add to Bag, Buy Now, Ask for Detailed Video) Placed Here Below Price -->
+                ${
+                  selectedPair.status === 'available'
+                    ? `<div class="space-y-2 pt-0.5">
+                        <div class="flex flex-col sm:flex-row gap-2.5">
+                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', true, false)" class="flex-1 bg-[#FF5500] hover:bg-[#ff661a] text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]">
+                            Add to Bag — ${formatPKR(getEffectivePairPrice(selectedPair))}
+                          </button>
+                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', false, true)" class="bg-white hover:bg-orange-100 text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition">
+                            Buy Now
+                          </button>
+                        </div>
+                        <button type="button" onclick="handleRequestDetailedInspectionWhatsApp('${escapeHtml(selectedPair.id)}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-2">
+                          ${iconSvg('whatsapp', 'w-4 h-4 text-[#FF5500]')}
+                          <span>Ask for Detailed Inspection / Live Video on WhatsApp</span>
+                        </button>
+                      </div>`
+                    : `<div class="bg-[#0B0502] border border-[#FF5500]/30 text-[#FF5500] font-bold py-3.5 px-4 rounded-xl text-center text-xs sm:text-sm">
+                        Sold Out (1-of-1 Pair)
+                      </div>`
+                }
 
                 ${cleanCustomDesc ? `<p class="text-xs text-orange-100/85 leading-relaxed bg-[#0B0502] border border-[#FF5500]/20 rounded-xl p-3">${escapeHtml(cleanCustomDesc)}</p>` : ''}
 
@@ -3842,27 +3854,15 @@
                   ${aiTabContent}
                 </div>
 
-                <!-- Action Buttons Placed Below AI Inspection Lab -->
-                ${
-                  selectedPair.status === 'available'
-                    ? `<div class="space-y-2 pt-1">
-                        <div class="flex flex-col sm:flex-row gap-2.5">
-                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', true, false)" class="flex-1 bg-[#FF5500] hover:bg-[#ff661a] text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]">
-                            Add to Bag — ${formatPKR(getEffectivePairPrice(selectedPair))}
-                          </button>
-                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', false, true)" class="bg-white hover:bg-orange-100 text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition">
-                            Buy Now
-                          </button>
-                        </div>
-                        <button type="button" onclick="handleRequestDetailedInspectionWhatsApp('${escapeHtml(selectedPair.id)}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-2">
-                          ${iconSvg('whatsapp', 'w-4 h-4 text-[#FF5500]')}
-                          <span>Ask for Detailed Inspection / Live Video on WhatsApp</span>
-                        </button>
-                      </div>`
-                    : `<div class="bg-[#0B0502] border border-[#FF5500]/30 text-[#FF5500] font-bold py-3.5 px-4 rounded-xl text-center text-xs sm:text-sm">
-                        Sold Out (1-of-1 Pair)
-                      </div>`
-                }
+                <!-- 100% Video Guarantee Box Placed Below AI Sneaker Lab -->
+                <div class="bg-[#0B0502] border border-emerald-500/45 rounded-xl p-3.5 sm:p-4 flex items-center gap-3 shadow-[0_0_20px_rgba(16,185,129,0.12)]">
+                  <div class="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0">
+                    ${iconSvg('check', 'w-5 h-5')}
+                  </div>
+                  <p class="text-xs sm:text-sm text-orange-100/95 leading-relaxed">
+                    <strong class="text-emerald-400">100% Video Guarantee:</strong> Close-up inspection video of this pair is sent on WhatsApp with order confirmation.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -4054,18 +4054,18 @@
       return `
         <main class="relative z-10 max-w-2xl mx-auto px-4 sm:px-6 py-12">
           <div class="bg-[#160B04] border border-[#FF5500]/50 rounded-3xl p-6 sm:p-10 text-center space-y-5 shadow-[0_0_45px_rgba(255,85,0,0.25)]">
-            <div class="w-14 h-14 rounded-full bg-[#FF5500]/20 border border-[#FF5500] flex items-center justify-center mx-auto text-[#FF5500]">
-              ${iconSvg('whatsapp', 'w-7 h-7')}
+            <div class="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500 flex items-center justify-center mx-auto text-emerald-400">
+              ${iconSvg('check', 'w-7 h-7')}
             </div>
             <span class="inline-block bg-[#FF5500] text-black text-xs font-black px-3.5 py-1 rounded-full">
-              ORDER #${escapeHtml(orderNum)} LOGGED
+              ORDER #${escapeHtml(orderNum)} PLACED
             </span>
             <h1 class="text-2xl sm:text-3xl font-black text-white">
-              Agar Pehla Button Kaam Nahi Kiya To Dubara Is Par Click Karein
+              Your order has been placed, soon our team will contact you for order confirmation!
             </h1>
-            <p class="text-xs sm:text-sm text-orange-100/85 leading-relaxed">
-              If the first WhatsApp button did not open or you faced any issue, please click the button below again to send your prepaid order message and receive our bank account details on WhatsApp.
-            </p>
+            <div class="bg-[#0A0401] border border-emerald-500/45 rounded-2xl p-4 text-xs sm:text-sm text-emerald-300 font-bold leading-relaxed shadow-[0_0_20px_rgba(16,185,129,0.15)]">
+              Agar Pehla Button Kaam Nahi Kiya To Dubara Is Par Click Karein — If WhatsApp did not open automatically, click below to message us on WhatsApp.
+            </div>
             <div class="space-y-3 pt-2">
               <button
                 type="button"
@@ -4091,24 +4091,51 @@
         return renderHomeView();
       }
       const orderNum = getOrderDisplayNumber(ord);
+      const itemsListHtml = (ord.items || [])
+        .map(
+          (i) =>
+            `<div class="flex items-center justify-between text-xs py-1 border-b border-[#FF5500]/15 last:border-0">
+              <span class="text-white font-semibold">[Pair #${escapeHtml(i.pairCode || orderNum)}] ${escapeHtml(i.name || i.title || 'Sneaker')} (EU ${escapeHtml(i.sizeEU)})</span>
+              <span class="text-[#FF5500] font-black">${formatPKR(i.price)}</span>
+            </div>`
+        )
+        .join('');
+
       return `
         <main class="relative z-10 max-w-2xl mx-auto px-4 sm:px-6 py-12">
           <div class="bg-[#160B04] border border-[#FF5500]/50 rounded-3xl p-6 sm:p-10 text-center space-y-5 shadow-[0_0_45px_rgba(255,85,0,0.25)]">
-            <div class="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500 flex items-center justify-center mx-auto text-emerald-400">
-              ${iconSvg('check', 'w-7 h-7')}
+            <div class="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center mx-auto text-emerald-400 shadow-[0_0_25px_rgba(16,185,129,0.3)]">
+              ${iconSvg('check', 'w-8 h-8')}
             </div>
-            <span class="inline-block bg-[#FF5500] text-black text-xs font-black px-3.5 py-1 rounded-full">
-              ORDER #${escapeHtml(orderNum)} CONFIRMED
+            <span class="inline-block bg-[#FF5500] text-black text-xs font-black px-4 py-1 rounded-full">
+              ORDER #${escapeHtml(orderNum)} PLACED
             </span>
-            <h1 class="text-2xl sm:text-3xl font-black text-white">Your Order Has Been Placed!</h1>
+            <h1 class="text-2xl sm:text-3xl font-black text-white leading-snug">
+              Your order has been placed, soon our team will contact you for order confirmation!
+            </h1>
             <div class="bg-[#0A0401] border border-emerald-500/45 rounded-2xl p-4 text-sm sm:text-base text-emerald-300 font-bold leading-relaxed shadow-[0_0_20px_rgba(16,185,129,0.15)]">
-              Your order has been placed, soon our team will contact you for payment and order confirmation.
+              Your order has been placed, soon our team will contact you for order confirmation!
             </div>
-            <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-2xl p-4 text-xs text-orange-200/85 space-y-1">
-              <div><strong>Pair ID / Order Number:</strong> #${escapeHtml(orderNum)}</div>
-              <div><strong>Total Prepaid Bill (5% OFF):</strong> ${formatPKR(ord.totals?.finalTotalWithShipping)}</div>
+            <div class="bg-[#0A0401] border border-[#FF5500]/30 rounded-2xl p-4 text-xs text-orange-200/85 space-y-2 text-left">
+              <div class="flex justify-between">
+                <span class="text-orange-200/70">Order / Pair ID:</span>
+                <strong class="text-white font-mono">#${escapeHtml(orderNum)}</strong>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-orange-200/70">Customer:</span>
+                <strong class="text-white">${escapeHtml(ord.customer?.fullName || '')} (${escapeHtml(ord.customer?.phone || '')})</strong>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-orange-200/70">Delivery Address:</span>
+                <strong class="text-white">${escapeHtml(ord.customer?.address || '')}, ${escapeHtml(ord.customer?.city || '')}</strong>
+              </div>
+              ${itemsListHtml ? `<div class="pt-2 border-t border-[#FF5500]/20 space-y-1">${itemsListHtml}</div>` : ''}
+              <div class="flex justify-between pt-2 border-t border-[#FF5500]/25 text-sm">
+                <span class="font-bold text-white">Total Prepaid Bill (5% OFF):</span>
+                <strong class="text-[#FF5500] font-black">${formatPKR(ord.totals?.finalTotalWithShipping)}</strong>
+              </div>
             </div>
-            <button type="button" onclick="setView('home')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition">
+            <button type="button" onclick="setView('home')" class="w-full bg-[#FF5500] hover:bg-[#ff6a1a] text-black font-black py-3.5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]">
               Back to Store
             </button>
           </div>

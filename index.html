@@ -803,7 +803,7 @@
           laces: Number(metaInfo.laces || Math.round(parsedCondNum) || 9),
           inside: Number(metaInfo.inside || Math.round(parsedCondNum) || 9)
         },
-        description: String(metaInfo.cleanDesc || '100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.'),
+        description: String(metaInfo.cleanDesc || '').replace('100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.', '').trim(),
         images: gallery,
         createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
       };
@@ -824,7 +824,7 @@
         : 'https://images.unsplash.com/photo-1552346154-21d32810aba3?auto=format&fit=crop&w=900&q=80';
 
       const packedDesc = packMetaIntoDescription(
-        pair.description || '100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.',
+        String(pair.description || '').replace('100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.', '').trim(),
         pair.customPairId || '',
         pair.imageRatio || '1:1',
         pair.imageFit || 'cover',
@@ -3002,7 +3002,7 @@
           laces: Number(state.pairForm.laces) || 9,
           inside: Number(state.pairForm.inside) || 9
         },
-        description: state.pairForm.description.trim() || '100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.',
+        description: state.pairForm.description.trim(),
         images: validImages,
         createdAt: Date.now()
       };
@@ -3704,37 +3704,42 @@
         })
         .join('');
 
+      const cleanCustomDesc = String(selectedPair.description || '')
+        .replace('100% Authentic 1-of-1 pre-loved pair. High quality guaranteed by PRESETS.', '')
+        .trim();
+
       return `
-        <main class="relative z-10 max-w-7xl mx-auto px-4 sm:px-8 py-8 sm:py-12 space-y-10">
-          <div class="flex flex-wrap items-center justify-between gap-4 bg-[#160B04] border border-[#FF5500]/35 rounded-2xl px-5 py-3.5">
-            <button onclick="setView('home')" class="inline-flex items-center gap-2 text-xs sm:text-sm text-orange-200 hover:text-white font-bold">
+        <main class="relative z-10 max-w-6xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-6">
+          <div class="flex flex-wrap items-center justify-between gap-3 bg-[#160B04] border border-[#FF5500]/30 rounded-xl px-4 py-2.5">
+            <button onclick="setView('home')" class="inline-flex items-center gap-1.5 text-xs text-orange-200 hover:text-white font-bold">
               ${iconSvg('chevronLeft', 'w-4 h-4 text-[#FF5500]')}
               <span>Back to Full Vault</span>
             </button>
-            <span class="text-xs text-black font-black font-mono bg-[#FF5500] px-3.5 py-1.5 rounded-lg shadow-[0_0_15px_rgba(255,85,0,0.5)]">
-              PAIR ID / ORDER ID: #${escapeHtml(pairCode)}
+            <span class="text-[11px] text-black font-black font-mono bg-[#FF5500] px-3 py-1 rounded-md">
+              PAIR ID: #${escapeHtml(pairCode)}
             </span>
           </div>
 
-          <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 bg-[#160B04] border border-[#FF5500]/45 rounded-3xl p-5 sm:p-10 shadow-[0_0_50px_rgba(255,85,0,0.16)]">
-            <div class="lg:col-span-7 space-y-4">
-              <div onclick="state.isImageZoomed = !state.isImageZoomed; renderApp();" class="relative w-full aspect-square max-h-[560px] bg-[#080301] rounded-2xl overflow-hidden border border-[#FF5500]/35 cursor-zoom-in group">
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-[#160B04] border border-[#FF5500]/40 rounded-2xl p-4 sm:p-6 shadow-[0_0_35px_rgba(255,85,0,0.14)]">
+            <!-- Left Column: Photo Viewer + Thumbnails -->
+            <div class="lg:col-span-6 space-y-3">
+              <div onclick="state.isImageZoomed = !state.isImageZoomed; renderApp();" class="relative w-full aspect-square max-h-[460px] bg-[#080301] rounded-xl overflow-hidden border border-[#FF5500]/30 cursor-zoom-in group">
                 <img src="${escapeHtml(currentImg)}" onerror="this.onerror=null;this.src=window.PRESETS_FALLBACK_IMG;" alt="${escapeHtml(selectedPair.name || '')}" style="transform: scale(${scaleVal});" class="w-full h-full ${fitClass} transition duration-500 ${state.isImageZoomed ? 'cursor-zoom-out' : ''}" />
-                <div class="absolute top-4 left-4 flex flex-wrap gap-2">
-                  <span class="bg-[#FF5500] text-black text-xs font-black px-3 py-1 rounded-lg">Pair ID: #${escapeHtml(pairCode)}</span>
-                  <span class="bg-black/85 border border-[#FF5500]/40 text-orange-200 text-xs font-bold px-3 py-1 rounded-lg">Angle ${state.activeImageIdx + 1} of ${selectedPair.images?.length || 1}</span>
-                  <span class="bg-black/85 border border-[#FF5500]/50 text-[#FF5500] text-xs font-black px-3 py-1 rounded-lg">Overall ${getAverageCondition(selectedPair.condition)}/10</span>
+                <div class="absolute top-3 left-3 flex flex-wrap gap-1.5">
+                  <span class="bg-[#FF5500] text-black text-[11px] font-black px-2.5 py-0.5 rounded-md">#${escapeHtml(pairCode)}</span>
+                  <span class="bg-black/85 border border-[#FF5500]/40 text-orange-200 text-[11px] font-bold px-2.5 py-0.5 rounded-md">${state.activeImageIdx + 1}/${selectedPair.images?.length || 1}</span>
+                  <span class="bg-black/85 border border-[#FF5500]/50 text-[#FF5500] text-[11px] font-black px-2.5 py-0.5 rounded-md">${getAverageCondition(selectedPair.condition)}/10</span>
                 </div>
               </div>
 
               ${
                 selectedPair.images && selectedPair.images.length > 0
-                  ? `<div class="grid grid-cols-5 gap-3">
+                  ? `<div class="grid grid-cols-5 gap-2">
                       ${selectedPair.images
                         .slice(0, 5)
                         .map(
                           (imgUrl, idx) => `
-                            <button onclick="state.activeImageIdx = ${idx}; state.isImageZoomed = false; renderApp();" class="h-20 sm:h-24 rounded-xl overflow-hidden border-2 transition ${state.activeImageIdx === idx ? 'border-[#FF5500] scale-105' : 'border-white/10 opacity-60 hover:opacity-100'}">
+                            <button onclick="state.activeImageIdx = ${idx}; state.isImageZoomed = false; renderApp();" class="h-16 sm:h-20 rounded-lg overflow-hidden border-2 transition ${state.activeImageIdx === idx ? 'border-[#FF5500] scale-105' : 'border-white/10 opacity-60 hover:opacity-100'}">
                               <img src="${escapeHtml(imgUrl)}" onerror="this.onerror=null;this.src=window.PRESETS_FALLBACK_IMG;" alt="" class="w-full h-full object-cover" />
                             </button>
                           `
@@ -3743,91 +3748,55 @@
                     </div>`
                   : ''
               }
-
-              <!-- Detailed Video With Order Confirmation Assurance Banner -->
-              <div class="bg-[#0B0502] border border-emerald-500/45 rounded-2xl p-4 sm:p-5 flex items-start gap-3.5 shadow-[0_0_25px_rgba(16,185,129,0.12)]">
-                <div class="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0 mt-0.5">
-                  ${iconSvg('check', 'w-5 h-5')}
-                </div>
-                <div class="space-y-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span class="bg-emerald-500 text-black text-[10px] font-black px-2.5 py-0.5 rounded uppercase">100% Video Verification Guarantee</span>
-                    <h3 class="text-xs sm:text-sm font-black text-white">Detailed Inspection Video Delivered With Order Confirmation</h3>
-                  </div>
-                  <p class="text-xs text-orange-100/85 leading-relaxed">
-                    Every customer will be delivered a complete, close-up <strong class="text-emerald-400">detailed inspection video of this exact 1-of-1 pair on WhatsApp along with their order confirmation</strong> before dispatch so you can verify the soles, body, and condition with 100% peace of mind.
-                  </p>
-                </div>
-              </div>
-
-              <div class="bg-[#0B0502] border border-[#FF5500]/35 rounded-2xl p-5 space-y-4">
-                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#FF5500]/20 pb-3">
-                  <div class="flex items-center gap-2 text-[#FF5500] font-black text-xs sm:text-sm">
-                    ${iconSvg('bot', 'w-4 h-4')}
-                    <span>AI 1-OF-1 SNEAKER INTELLIGENCE LAB</span>
-                  </div>
-                  <div class="flex flex-wrap gap-1.5">
-                    ${[
-                      { id: 'fit', label: 'AI Insole Fit' },
-                      { id: 'authenticity', label: 'AI Condition Audit' },
-                      { id: 'outfit', label: 'AI Style Match' },
-                      { id: 'care', label: 'AI Care Guide' }
-                    ]
-                      .map(
-                        (tab) => `
-                          <button type="button" onclick="state.aiProductTab = '${tab.id}'; renderApp();" class="px-3 py-1 rounded-lg text-[11px] font-bold transition ${state.aiProductTab === tab.id ? 'bg-[#FF5500] text-black' : 'bg-[#160B04] text-orange-200/75 border border-[#FF5500]/20'}">
-                            ${tab.label}
-                          </button>
-                        `
-                      )
-                      .join('')}
-                  </div>
-                </div>
-                ${aiTabContent}
-              </div>
             </div>
 
-            <div class="lg:col-span-5 flex flex-col justify-between space-y-6">
-              <div class="space-y-5">
-                <div class="flex flex-wrap items-center gap-2 text-xs">
-                  <span class="bg-[#FF5500] text-black font-black px-3 py-1 rounded-lg">Pair ID: #${escapeHtml(pairCode)}</span>
-                  <span class="bg-white text-black font-black uppercase px-3 py-1 rounded-lg">${escapeHtml(selectedPair.brand || 'Nike')}</span>
-                  <span class="bg-[#FF5500]/15 border border-[#FF5500]/40 text-orange-200 font-bold px-3 py-1 rounded-lg">${escapeHtml(selectedPair.category || 'Casual')}</span>
-                  <span class="bg-[#FF5500]/20 border border-[#FF5500]/50 text-[#FF5500] font-black px-3 py-1 rounded-lg">Insole: ${escapeHtml(selectedPair.insoleInches || '10.8')} Inches</span>
-                  ${selectedPair.prepaidOnly || selectedPair.is_prepaid_only ? `<span class="bg-amber-400 text-black font-black px-3 py-1 rounded-lg">Prepaid Only</span>` : ''}
+            <!-- Right Column: Title, Price, Video Guarantee Box, Condition, AI Lab & Action Buttons Below AI Lab -->
+            <div class="lg:col-span-6 flex flex-col justify-between space-y-4">
+              <div class="space-y-3.5">
+                <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span class="bg-white text-black font-black uppercase px-2.5 py-0.5 rounded-md">${escapeHtml(selectedPair.brand || 'Nike')}</span>
+                  <span class="bg-[#FF5500]/15 border border-[#FF5500]/40 text-orange-200 font-bold px-2.5 py-0.5 rounded-md">${escapeHtml(selectedPair.category || 'Casual')}</span>
+                  <span class="bg-[#1A0D05] border border-[#FF5500]/40 text-white font-bold px-2.5 py-0.5 rounded-md">EU ${escapeHtml(selectedPair.sizeEU || selectedPair.eu_size || selectedPair.size || '43')}</span>
+                  <span class="bg-[#FF5500]/20 border border-[#FF5500]/50 text-[#FF5500] font-black px-2.5 py-0.5 rounded-md">Insole ${escapeHtml(selectedPair.insoleInches || '10.8')}"</span>
+                  ${selectedPair.prepaidOnly || selectedPair.is_prepaid_only ? `<span class="bg-amber-400 text-black font-black px-2.5 py-0.5 rounded-md">Prepaid Only</span>` : ''}
                 </div>
 
-                <h1 class="text-2xl sm:text-4xl font-black text-white leading-tight">${escapeHtml(selectedPair.name || selectedPair.title || '')}</h1>
+                <h1 class="text-xl sm:text-3xl font-black text-white leading-tight">${escapeHtml(selectedPair.name || selectedPair.title || '')}</h1>
 
-                <div class="bg-[#0B0502] border border-[#FF5500]/30 rounded-xl p-3 text-[11px] text-orange-200/85">
-                  <strong class="text-[#FF5500]">Official Pair & Order ID (#${escapeHtml(pairCode)}):</strong> When you order this sneaker, your Order Number will be <strong class="text-white">#${escapeHtml(pairCode)}</strong>. Save this Pair ID if you ever need to contact us for order support, cancellation, or a damage return claim.
-                </div>
-
-                <div class="bg-[#0B0502] border border-[#FF5500]/35 rounded-2xl p-4 flex items-center justify-between">
-                  <div>
-                    <span class="text-[11px] text-orange-200/60 uppercase font-bold block">PRESETS Price</span>
-                    <div class="flex items-baseline gap-3 mt-0.5">
-                      <span class="text-3xl font-black text-[#FF5500]">${formatPKR(getEffectivePairPrice(selectedPair))}</span>
-                      ${(Number(selectedPair.discountPercent) || 0) > 0 ? `<span class="text-sm text-orange-200/40 line-through">${formatPKR(selectedPair.price || selectedPair.price_pkr)}</span>` : ''}
-                    </div>
+                <!-- Compact Price Bar -->
+                <div class="bg-[#0B0502] border border-[#FF5500]/35 rounded-xl px-4 py-3 flex items-center justify-between gap-2">
+                  <div class="flex items-baseline gap-2.5">
+                    <span class="text-2xl sm:text-3xl font-black text-[#FF5500]">${formatPKR(getEffectivePairPrice(selectedPair))}</span>
+                    ${(Number(selectedPair.discountPercent) || 0) > 0 ? `<span class="text-xs text-orange-200/40 line-through">${formatPKR(selectedPair.price || selectedPair.price_pkr)}</span>` : ''}
                   </div>
                   <div class="text-right">
                     ${
                       selectedPair.freeDelivery || getEffectivePairPrice(selectedPair) >= FREE_DELIVERY_THRESHOLD
-                        ? `<span class="inline-block bg-emerald-500 text-black text-[11px] font-black px-3 py-1 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.4)]">✓ FREE HOME DELIVERY</span>`
-                        : `<span class="inline-block bg-[#160B04] border border-[#FF5500]/40 text-orange-200 text-[11px] font-bold px-3 py-1 rounded-full">Free Delivery Above Rs. 8,000</span>`
+                        ? `<span class="inline-block bg-emerald-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full">✓ FREE DELIVERY</span>`
+                        : `<span class="inline-block bg-[#160B04] border border-[#FF5500]/35 text-orange-200 text-[10px] font-bold px-2.5 py-1 rounded-full">Free Delivery ≥ Rs. 8,000</span>`
                     }
                   </div>
                 </div>
 
-                <p class="text-sm text-orange-100/85 leading-relaxed">${escapeHtml(selectedPair.description || '')}</p>
-
-                <div class="bg-[#0B0502] border border-[#FF5500]/30 rounded-2xl p-4 space-y-3">
-                  <div class="flex justify-between items-center text-xs">
-                    <span class="font-bold text-orange-200">CONDITION REPORT (/10)</span>
-                    <span class="bg-[#FF5500] text-black font-black px-2.5 py-0.5 rounded-md">Avg ${getAverageCondition(selectedPair.condition)}/10</span>
+                <!-- 100% Video Guarantee Box (Slightly Bigger, Placed Below Price Where Add to Bag Was) -->
+                <div class="bg-[#0B0502] border border-emerald-500/45 rounded-xl p-3.5 sm:p-4 flex items-center gap-3 shadow-[0_0_20px_rgba(16,185,129,0.12)]">
+                  <div class="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 shrink-0">
+                    ${iconSvg('check', 'w-5 h-5')}
                   </div>
-                  <div class="grid grid-cols-2 gap-3">
+                  <p class="text-xs sm:text-sm text-orange-100/95 leading-relaxed">
+                    <strong class="text-emerald-400">100% Video Guarantee:</strong> Close-up inspection video of this pair is sent on WhatsApp with order confirmation.
+                  </p>
+                </div>
+
+                ${cleanCustomDesc ? `<p class="text-xs text-orange-100/85 leading-relaxed bg-[#0B0502] border border-[#FF5500]/20 rounded-xl p-3">${escapeHtml(cleanCustomDesc)}</p>` : ''}
+
+                <!-- Compact 1-Row Condition Report -->
+                <div class="bg-[#0B0502] border border-[#FF5500]/25 rounded-xl p-3 space-y-2">
+                  <div class="flex justify-between items-center text-[11px]">
+                    <span class="font-bold text-orange-200">CONDITION REPORT</span>
+                    <span class="bg-[#FF5500] text-black font-black px-2 py-0.5 rounded">Avg ${getAverageCondition(selectedPair.condition)}/10</span>
+                  </div>
+                  <div class="grid grid-cols-4 gap-2">
                     ${[
                       { label: 'Soles', val: selectedPair.condition?.soles ?? 9 },
                       { label: 'Body', val: selectedPair.condition?.body ?? 9 },
@@ -3836,41 +3805,65 @@
                     ]
                       .map(
                         (c) => `
-                          <div class="bg-[#160B04] border border-[#FF5500]/20 rounded-xl p-3 space-y-1">
-                            <div class="flex justify-between text-xs">
-                              <span class="text-orange-200/80">${c.label}</span>
-                              <span class="font-black text-white">${c.val}/10</span>
-                            </div>
+                          <div class="bg-[#160B04] border border-[#FF5500]/20 rounded-lg px-2 py-1.5 text-center">
+                            <span class="text-[10px] text-orange-200/75 block">${c.label}</span>
+                            <span class="text-xs font-black text-white">${c.val}/10</span>
                           </div>
                         `
                       )
                       .join('')}
                   </div>
                 </div>
-              </div>
 
-              ${
-                selectedPair.status === 'available'
-                  ? `<div class="space-y-2.5 pt-2">
-                      <div class="flex flex-col sm:flex-row gap-3">
-                        <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', true, false)" class="flex-1 bg-[#FF5500] hover:bg-[#ff661a] text-black font-black py-4 px-6 rounded-xl text-sm transition shadow-[0_0_25px_rgba(255,85,0,0.45)]">
-                          Add to Bag — ${formatPKR(getEffectivePairPrice(selectedPair))}
+                <!-- Compact AI Fit & Inspection Lab -->
+                <div class="bg-[#0B0502] border border-[#FF5500]/30 rounded-xl p-3.5 space-y-3">
+                  <div class="flex flex-wrap items-center justify-between gap-1.5 border-b border-[#FF5500]/20 pb-2">
+                    <div class="flex items-center gap-1.5 text-[#FF5500] font-black text-xs">
+                      ${iconSvg('bot', 'w-3.5 h-3.5')}
+                      <span>AI SNEAKER LAB</span>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      ${[
+                        { id: 'fit', label: 'AI Insole Fit' },
+                        { id: 'authenticity', label: 'AI Condition Audit' },
+                        { id: 'outfit', label: 'AI Style Match' },
+                        { id: 'care', label: 'AI Care Guide' }
+                      ]
+                        .map(
+                          (tab) => `
+                            <button type="button" onclick="state.aiProductTab = '${tab.id}'; renderApp();" class="px-2.5 py-1 rounded-md text-[10px] font-bold transition ${state.aiProductTab === tab.id ? 'bg-[#FF5500] text-black' : 'bg-[#160B04] text-orange-200/75 border border-[#FF5500]/20'}">
+                              ${tab.label}
+                            </button>
+                          `
+                        )
+                        .join('')}
+                    </div>
+                  </div>
+                  ${aiTabContent}
+                </div>
+
+                <!-- Action Buttons Placed Below AI Inspection Lab -->
+                ${
+                  selectedPair.status === 'available'
+                    ? `<div class="space-y-2 pt-1">
+                        <div class="flex flex-col sm:flex-row gap-2.5">
+                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', true, false)" class="flex-1 bg-[#FF5500] hover:bg-[#ff661a] text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition shadow-[0_0_20px_rgba(255,85,0,0.4)]">
+                            Add to Bag — ${formatPKR(getEffectivePairPrice(selectedPair))}
+                          </button>
+                          <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', false, true)" class="bg-white hover:bg-orange-100 text-black font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition">
+                            Buy Now
+                          </button>
+                        </div>
+                        <button type="button" onclick="handleRequestDetailedInspectionWhatsApp('${escapeHtml(selectedPair.id)}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/45 text-orange-100 font-bold py-3 px-4 rounded-xl text-xs transition flex items-center justify-center gap-2">
+                          ${iconSvg('whatsapp', 'w-4 h-4 text-[#FF5500]')}
+                          <span>Ask for Detailed Inspection / Live Video on WhatsApp</span>
                         </button>
-                        <button onclick="addToCartById('${escapeHtml(selectedPair.id)}', false, true)" class="bg-white hover:bg-orange-100 text-black font-black py-4 px-6 rounded-xl text-sm transition">
-                          Buy Now
-                        </button>
-                      </div>
-                      <button type="button" onclick="handleRequestDetailedInspectionWhatsApp('${escapeHtml(selectedPair.id)}')" class="w-full bg-[#1A0D05] hover:bg-[#FF5500]/20 border border-[#FF5500]/50 text-orange-100 font-black py-3.5 px-5 rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(255,85,0,0.18)]">
-                        ${iconSvg('whatsapp', 'w-4 h-4 text-[#FF5500]')}
-                        <span>Ask for Detailed Inspection / Live Video on WhatsApp</span>
-                      </button>
-                    </div>`
-                  : `<div class="space-y-2.5">
-                      <div class="bg-[#0B0502] border border-[#FF5500]/30 text-[#FF5500] font-bold p-4 rounded-xl text-center text-sm">
+                      </div>`
+                    : `<div class="bg-[#0B0502] border border-[#FF5500]/30 text-[#FF5500] font-bold py-3.5 px-4 rounded-xl text-center text-xs sm:text-sm">
                         Sold Out (1-of-1 Pair)
-                      </div>
-                    </div>`
-              }
+                      </div>`
+                }
+              </div>
             </div>
           </div>
 
